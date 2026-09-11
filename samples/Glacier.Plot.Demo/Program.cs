@@ -3,6 +3,7 @@ namespace Glacier.Plot.Demo;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Glacier.Plot.Core;
 using Glacier.Plot.Decimation;
 using Glacier.Plot.Figures;
@@ -14,7 +15,7 @@ using Glacier.Tensor.Core;
 
 public static class Program
 {
-    public static void Main()
+    public static void Main(string[] args)
     {
         Console.WriteLine("================================================================================");
         Console.WriteLine("          GLACIER.PLOT: HIGH-PERFORMANCE 2D VISUALIZATION ENGINE (.NET 10)     ");
@@ -191,5 +192,25 @@ public static class Program
         Console.WriteLine("================================================================================");
         Console.WriteLine("           ALL DEMOS COMPLETED SUCCESSFULLY: GLACIER.PLOT IS READY!             ");
         Console.WriteLine("================================================================================");
+
+        bool isHeadless = args.Contains("--headless") || args.Contains("--bench");
+        if (!isHeadless)
+        {
+            try
+            {
+                Console.WriteLine($"\n[Displaying 10,000,000-point 4K plot on screen: {path1}]");
+                Process.Start(new ProcessStartInfo(path1) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  (Note: could not auto-launch image viewer: {ex.Message})");
+            }
+
+            if (Environment.UserInteractive && !Console.IsInputRedirected)
+            {
+                Console.WriteLine("\n[Press any key to exit...]");
+                Console.ReadKey();
+            }
+        }
     }
 }
