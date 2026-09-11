@@ -18,6 +18,16 @@ public static unsafe class MinMaxKernels
         ReadOnlySpan<float> yValues,
         int targetPixelWidth,
         Span<float> outX,
+        Span<float> outY,
+        Glacier.Plot.Core.GpuTarget target)
+        => Glacier.Plot.Compute.GpuPlotAccelerator.MinMaxDownsample(xValues, yValues, targetPixelWidth, outX, outY, target);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static int Downsample(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPixelWidth,
+        Span<float> outX,
         Span<float> outY)
     {
         if (targetPixelWidth <= 0)

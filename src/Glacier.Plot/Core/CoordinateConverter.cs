@@ -40,4 +40,15 @@ public readonly struct CoordinateConverter
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double GetDataY(float py) => Limits.YMin + (Dimensions.DataBottom - py) / PxPerUnitY;
+
+    /// <summary>
+    /// Vectorized/GPU accelerated coordinate transformation of data space points to screen pixel coordinates.
+    /// </summary>
+    public void TransformCoordinates(
+        ReadOnlySpan<float> xIn,
+        ReadOnlySpan<float> yIn,
+        Span<float> xOut,
+        Span<float> yOut,
+        GpuTarget target = GpuTarget.Auto)
+        => Compute.GpuPlotAccelerator.TransformCoordinates(xIn, yIn, xOut, yOut, this, target);
 }
