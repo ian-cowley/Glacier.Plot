@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>preview</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TieredPGO>true</TieredPGO>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <NoWarn>$(NoWarn);CS1591;CS8981</NoWarn>
+
+    <!-- NuGet Package Properties -->
+    <PackageId>Glacier.Plot</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier High-Performance Ecosystem</Company>
+    <Description>Hardware-accelerated 2D data visualization and plotting engine for .NET 10. High-frequency 60/120 FPS rendering on 10M+ points with SIMD LTTB decimation, SkiaSharp GPU rasterization, and direct Glacier.Polaris / Glacier.Tensor interop.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Plot</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Plot.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>plot;visualization;matplotlib;simd;lttb;skiasharp;gpu;realtime;streaming;dataframe;polaris;tensor;net10;glacier</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
+    <PackageReference Include="Glacier.Polaris" Version="1.0.14" />
+    <PackageReference Include="Glacier.Tensor" Version="1.0.0" />
+  </ItemGroup>
+</Project>
