@@ -181,66 +181,8 @@ public static unsafe class GpuPlotAccelerator
 
         if (useGpu && IsNvidiaAvailable && s_fnMinMax != IntPtr.Zero)
         {
-            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
-            nuint bytesOut = (nuint)(targetPoints * sizeof(float));
-
-            CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
-            {
-                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
-
-                fixed (float* pX = xValues, pY = yValues, pOutX = outX, pOutY = outY)
-                {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
-
-                    IntPtr[] kernelParams = new IntPtr[7];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(targetPixelWidth, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
-
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
-
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
-                    {
-                        uint blockSize = 256;
-                        uint gridSize = (uint)((targetPixelWidth + blockSize - 1) / blockSize);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnMinMax,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pOutX, s_dOutX, bytesOut);
-                            CuDriver.MemcpyDtoH((IntPtr)pOutY, s_dOutY, bytesOut);
-                            return targetPoints;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free();
-                    }
-                }
-            }
+            if (TryExecuteGpuMinMax(xValues, yValues, targetPixelWidth, outX, outY, bucketSize, totalPoints, targetPoints))
+                return targetPoints;
         }
 
         // SIMD AVX-512 / AVX2 CPU Fallback
@@ -330,74 +272,8 @@ public static unsafe class GpuPlotAccelerator
 
         if (useGpu && IsNvidiaAvailable && s_fnTransformCoords != IntPtr.Zero)
         {
-            nuint bytes = (nuint)(n * sizeof(float));
-            CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
-            {
-                EnsurePoolBuffers(bytes, bytes, bytes, bytes);
-
-                fixed (float* pXIn = xIn, pYIn = yIn, pXOut = xOut, pYOut = yOut)
-                {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pXIn, bytes);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pYIn, bytes);
-
-                    IntPtr[] kernelParams = new IntPtr[11];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(n, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(xMin, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(yMin, GCHandleType.Pinned);
-                    GCHandle h7 = GCHandle.Alloc(pxPerX, GCHandleType.Pinned);
-                    GCHandle h8 = GCHandle.Alloc(pxPerY, GCHandleType.Pinned);
-                    GCHandle h9 = GCHandle.Alloc(dataLeft, GCHandleType.Pinned);
-                    GCHandle h10 = GCHandle.Alloc(dataBottom, GCHandleType.Pinned);
-
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
-                    kernelParams[7] = h7.AddrOfPinnedObject();
-                    kernelParams[8] = h8.AddrOfPinnedObject();
-                    kernelParams[9] = h9.AddrOfPinnedObject();
-                    kernelParams[10] = h10.AddrOfPinnedObject();
-
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
-                    {
-                        uint blockSize = 256;
-                        uint itemsPerBlock = blockSize * 4;
-                        uint gridSize = (uint)((n + itemsPerBlock - 1) / itemsPerBlock);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnTransformCoords,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pXOut, s_dOutX, bytes);
-                            CuDriver.MemcpyDtoH((IntPtr)pYOut, s_dOutY, bytes);
-                            return;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free(); h7.Free();
-                        h8.Free(); h9.Free(); h10.Free();
-                    }
-                }
-            }
+            if (TryExecuteGpuTransformCoords(xIn, yIn, xOut, yOut, n, xMin, yMin, pxPerX, pxPerY, dataLeft, dataBottom))
+                return;
         }
 
         // SIMD AVX-512 / AVX2 CPU Fallback
@@ -470,66 +346,8 @@ public static unsafe class GpuPlotAccelerator
 
         if (useGpu && IsNvidiaAvailable && s_fnBucketAvgs != IntPtr.Zero)
         {
-            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
-            nuint bytesOut = (nuint)(numBuckets * sizeof(float));
-
-            CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
-            {
-                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
-
-                fixed (float* pX = xIn, pY = yIn, pAvgX = avgX, pAvgY = avgY)
-                {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
-
-                    IntPtr[] kernelParams = new IntPtr[7];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(numBuckets, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
-
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
-
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
-                    {
-                        uint blockSize = 256;
-                        uint gridSize = (uint)((numBuckets + blockSize - 1) / blockSize);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnBucketAvgs,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pAvgX, s_dOutX, bytesOut);
-                            CuDriver.MemcpyDtoH((IntPtr)pAvgY, s_dOutY, bytesOut);
-                            return;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free();
-                    }
-                }
-            }
+            if (TryExecuteGpuBucketAvgs(xIn, yIn, numBuckets, avgX, avgY, totalPoints, bucketSize))
+                return;
         }
 
         // SIMD CPU Fallback
@@ -591,6 +409,262 @@ public static unsafe class GpuPlotAccelerator
             CuDriver.MemAlloc(out s_dOutY, capOutY);
             s_capOutY = capOutY;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryExecuteGpuMinMax(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPixelWidth,
+        Span<float> outX,
+        Span<float> outY,
+        float bucketSize,
+        int totalPoints,
+        int targetPoints)
+    {
+        try
+        {
+            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
+            nuint bytesOut = (nuint)(targetPoints * sizeof(float));
+
+            CuDriver.CtxSetCurrent(s_cuContext);
+            lock (s_initLock)
+            {
+                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
+
+                fixed (float* pX = xValues, pY = yValues, pOutX = outX, pOutY = outY)
+                {
+                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
+                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
+
+                    IntPtr[] kernelParams = new IntPtr[7];
+                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
+                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
+                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
+                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
+                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
+                    GCHandle h5 = GCHandle.Alloc(targetPixelWidth, GCHandleType.Pinned);
+                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
+
+                    kernelParams[0] = h0.AddrOfPinnedObject();
+                    kernelParams[1] = h1.AddrOfPinnedObject();
+                    kernelParams[2] = h2.AddrOfPinnedObject();
+                    kernelParams[3] = h3.AddrOfPinnedObject();
+                    kernelParams[4] = h4.AddrOfPinnedObject();
+                    kernelParams[5] = h5.AddrOfPinnedObject();
+                    kernelParams[6] = h6.AddrOfPinnedObject();
+
+                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
+                    try
+                    {
+                        uint blockSize = 256;
+                        uint gridSize = (uint)((targetPixelWidth + blockSize - 1) / blockSize);
+
+                        int launchRes = CuDriver.LaunchKernel(
+                            s_fnMinMax,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, IntPtr.Zero,
+                            hArray.AddrOfPinnedObject(),
+                            IntPtr.Zero);
+
+                        if (launchRes == 0)
+                        {
+                            CuDriver.CtxSynchronize();
+                            CuDriver.MemcpyDtoH((IntPtr)pOutX, s_dOutX, bytesOut);
+                            CuDriver.MemcpyDtoH((IntPtr)pOutY, s_dOutY, bytesOut);
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        hArray.Free();
+                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
+                        h4.Free(); h5.Free(); h6.Free();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryExecuteGpuTransformCoords(
+        ReadOnlySpan<float> xIn,
+        ReadOnlySpan<float> yIn,
+        Span<float> xOut,
+        Span<float> yOut,
+        int n,
+        float xMin,
+        float yMin,
+        float pxPerX,
+        float pxPerY,
+        float dataLeft,
+        float dataBottom)
+    {
+        try
+        {
+            nuint bytes = (nuint)(n * sizeof(float));
+            CuDriver.CtxSetCurrent(s_cuContext);
+            lock (s_initLock)
+            {
+                EnsurePoolBuffers(bytes, bytes, bytes, bytes);
+
+                fixed (float* pXIn = xIn, pYIn = yIn, pXOut = xOut, pYOut = yOut)
+                {
+                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pXIn, bytes);
+                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pYIn, bytes);
+
+                    IntPtr[] kernelParams = new IntPtr[11];
+                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
+                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
+                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
+                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
+                    GCHandle h4 = GCHandle.Alloc(n, GCHandleType.Pinned);
+                    GCHandle h5 = GCHandle.Alloc(xMin, GCHandleType.Pinned);
+                    GCHandle h6 = GCHandle.Alloc(yMin, GCHandleType.Pinned);
+                    GCHandle h7 = GCHandle.Alloc(pxPerX, GCHandleType.Pinned);
+                    GCHandle h8 = GCHandle.Alloc(pxPerY, GCHandleType.Pinned);
+                    GCHandle h9 = GCHandle.Alloc(dataLeft, GCHandleType.Pinned);
+                    GCHandle h10 = GCHandle.Alloc(dataBottom, GCHandleType.Pinned);
+
+                    kernelParams[0] = h0.AddrOfPinnedObject();
+                    kernelParams[1] = h1.AddrOfPinnedObject();
+                    kernelParams[2] = h2.AddrOfPinnedObject();
+                    kernelParams[3] = h3.AddrOfPinnedObject();
+                    kernelParams[4] = h4.AddrOfPinnedObject();
+                    kernelParams[5] = h5.AddrOfPinnedObject();
+                    kernelParams[6] = h6.AddrOfPinnedObject();
+                    kernelParams[7] = h7.AddrOfPinnedObject();
+                    kernelParams[8] = h8.AddrOfPinnedObject();
+                    kernelParams[9] = h9.AddrOfPinnedObject();
+                    kernelParams[10] = h10.AddrOfPinnedObject();
+
+                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
+                    try
+                    {
+                        uint blockSize = 256;
+                        uint itemsPerBlock = blockSize * 4;
+                        uint gridSize = (uint)((n + itemsPerBlock - 1) / itemsPerBlock);
+
+                        int launchRes = CuDriver.LaunchKernel(
+                            s_fnTransformCoords,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, IntPtr.Zero,
+                            hArray.AddrOfPinnedObject(),
+                            IntPtr.Zero);
+
+                        if (launchRes == 0)
+                        {
+                            CuDriver.CtxSynchronize();
+                            CuDriver.MemcpyDtoH((IntPtr)pXOut, s_dOutX, bytes);
+                            CuDriver.MemcpyDtoH((IntPtr)pYOut, s_dOutY, bytes);
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        hArray.Free();
+                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
+                        h4.Free(); h5.Free(); h6.Free(); h7.Free();
+                        h8.Free(); h9.Free(); h10.Free();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryExecuteGpuBucketAvgs(
+        ReadOnlySpan<float> xIn,
+        ReadOnlySpan<float> yIn,
+        int numBuckets,
+        Span<float> avgX,
+        Span<float> avgY,
+        int totalPoints,
+        float bucketSize)
+    {
+        try
+        {
+            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
+            nuint bytesOut = (nuint)(numBuckets * sizeof(float));
+
+            CuDriver.CtxSetCurrent(s_cuContext);
+            lock (s_initLock)
+            {
+                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
+
+                fixed (float* pX = xIn, pY = yIn, pAvgX = avgX, pAvgY = avgY)
+                {
+                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
+                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
+
+                    IntPtr[] kernelParams = new IntPtr[7];
+                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
+                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
+                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
+                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
+                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
+                    GCHandle h5 = GCHandle.Alloc(numBuckets, GCHandleType.Pinned);
+                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
+
+                    kernelParams[0] = h0.AddrOfPinnedObject();
+                    kernelParams[1] = h1.AddrOfPinnedObject();
+                    kernelParams[2] = h2.AddrOfPinnedObject();
+                    kernelParams[3] = h3.AddrOfPinnedObject();
+                    kernelParams[4] = h4.AddrOfPinnedObject();
+                    kernelParams[5] = h5.AddrOfPinnedObject();
+                    kernelParams[6] = h6.AddrOfPinnedObject();
+
+                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
+                    try
+                    {
+                        uint blockSize = 256;
+                        uint gridSize = (uint)((numBuckets + blockSize - 1) / blockSize);
+
+                        int launchRes = CuDriver.LaunchKernel(
+                            s_fnBucketAvgs,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, IntPtr.Zero,
+                            hArray.AddrOfPinnedObject(),
+                            IntPtr.Zero);
+
+                        if (launchRes == 0)
+                        {
+                            CuDriver.CtxSynchronize();
+                            CuDriver.MemcpyDtoH((IntPtr)pAvgX, s_dOutX, bytesOut);
+                            CuDriver.MemcpyDtoH((IntPtr)pAvgY, s_dOutY, bytesOut);
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        hArray.Free();
+                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
+                        h4.Free(); h5.Free(); h6.Free();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
     }
 
     #endregion
