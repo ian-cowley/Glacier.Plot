@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Plot</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
     <Description>Hardware-accelerated 2D data visualization and plotting engine for .NET 10. High-frequency 60/120 FPS rendering on 10M+ points with SIMD LTTB decimation, SkiaSharp GPU rasterization, and direct Glacier.Polaris / Glacier.Tensor interop.</Description>
@@ -33,7 +33,7 @@
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" />
     <PackageReference Include="Glacier.Polaris" Version="1.0.15" />
-    <PackageReference Include="Glacier.Tensor" Version="1.0.0" />
-    <PackageReference Include="Glacier.Gpu" Version="1.0.0" />
+    <PackageReference Include="Glacier.Tensor" Version="1.0.1" />
+    <PackageReference Include="Glacier.Gpu" Version="1.0.2" />
   </ItemGroup>
 </Project>
