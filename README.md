@@ -131,6 +131,12 @@ GpuPlotAccelerator.MinMaxDownsample(
 
 ---
 
+## Credits
+
+Developed by Ian Cowley and Antigravity (Google DeepMind).
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE). Copyright (c) 2026 Ian Cowley.
