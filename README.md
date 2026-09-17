@@ -1,3 +1,5 @@
+![Glacier.Plot Banner](assets/banner.jpg)
+
 # 📊 Glacier.Plot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
