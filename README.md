@@ -30,6 +30,22 @@
 
 ---
 
+## 🖼️ Visual Gallery: Real Rendered Plots & High-Frequency Streaming
+
+All figures below are generated directly from the included `Glacier.Plot.Demo` sample using AVX-512 SIMD / GPU acceleration, zero-copy `Glacier.Polaris` integration, and SkiaSharp rasterization:
+
+| 10,000,000-Point Signal (SIMD LTTB Decimated) | Glacier.Polaris Zero-Copy Financial Chart |
+| :---: | :---: |
+| ![10M Telemetry Signal](docs/images/demo_telemetry_10m.png) | ![Polaris Multi-Series Chart](docs/images/demo_polaris_chart.png) |
+| *10M data points downsampled in 2.5 ms (3.96B pts/sec) and rendered to 1080p Cyber theme* | *Multi-series equities & tech price paths plotted directly from DataFrame unmanaged spans* |
+
+| Glacier.Tensor 2D Weight Heatmap (Plasma) | Zero-Allocation 500+ FPS Streaming Simulation |
+| :---: | :---: |
+| ![Tensor Colormap Heatmap](docs/images/demo_tensor_heatmap.png) | ![Real-time Streaming Sensor](docs/images/demo_streaming_last_frame.png) |
+| *2D deep learning attention matrix mapped directly via Skia colormap shading* | *Ring-buffer telemetry streaming running at >500 FPS with zero GC allocations* |
+
+---
+
 ## 2. Rendering Pipeline & Architecture
 
 ```
