@@ -71,6 +71,9 @@ public static unsafe class LttbKernels
             pOutY[0] = pY[0];
             int a = 0;
 
+            float* pAreas = stackalloc float[16];
+            int* pIndices = stackalloc int[16];
+
             for (int i = 0; i < targetPoints - 2; i++)
             {
                 int currentBucketStart = (int)((i + 0) * bucketSize) + 1;
@@ -149,6 +152,83 @@ public static unsafe class LttbKernels
                 int bestIndex = currentBucketStart;
 
                 int p = currentBucketStart;
+                int bucketPoints = currentBucketEnd - currentBucketStart;
+
+                if (Avx512F.IsSupported && bucketPoints >= 16)
+                {
+                    var vu = Vector512.Create(u);
+                    var vv = Vector512.Create(v);
+                    var vnegC = Vector512.Create(-c);
+
+                    var vMaxArea = Vector512.Create(-1f);
+                    var vBestIdx = Vector512.Create(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                    var vCurIdx = Vector512.Create(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                    var vStep16 = Vector512.Create(16);
+
+                    for (; p <= currentBucketEnd - 16; p += 16)
+                    {
+                        var vx = Vector512.Load(pX + p);
+                        var vy = Vector512.Load(pY + p);
+                        var vLin = Avx512F.FusedMultiplyAdd(vv, vx, Avx512F.FusedMultiplyAdd(vu, vy, vnegC));
+                        var vArea = Vector512.Abs(vLin);
+
+                        var mask = Vector512.GreaterThan(vArea, vMaxArea);
+                        vMaxArea = Vector512.ConditionalSelect(mask, vArea, vMaxArea);
+                        vBestIdx = Vector512.ConditionalSelect(mask.AsInt32(), vCurIdx, vBestIdx);
+
+                        vCurIdx = Vector512.Add(vCurIdx, vStep16);
+                    }
+
+                    vMaxArea.Store(pAreas);
+                    vBestIdx.Store(pIndices);
+
+                    for (int k = 0; k < 16; k++)
+                    {
+                        if (pAreas[k] > maxArea)
+                        {
+                            maxArea = pAreas[k];
+                            bestIndex = currentBucketStart + pIndices[k];
+                        }
+                    }
+                }
+                else if (Avx2.IsSupported && bucketPoints >= 8)
+                {
+                    var vu = Vector256.Create(u);
+                    var vv = Vector256.Create(v);
+                    var vnegC = Vector256.Create(-c);
+
+                    var vMaxArea = Vector256.Create(-1f);
+                    var vBestIdx = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+                    var vCurIdx = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+                    var vStep8 = Vector256.Create(8);
+
+                    for (; p <= currentBucketEnd - 8; p += 8)
+                    {
+                        var vx = Vector256.Load(pX + p);
+                        var vy = Vector256.Load(pY + p);
+                        var vLin = Vector256.Add(Vector256.Multiply(vv, vx), Vector256.Add(Vector256.Multiply(vu, vy), vnegC));
+                        var vArea = Vector256.Abs(vLin);
+
+                        var mask = Vector256.GreaterThan(vArea, vMaxArea);
+                        vMaxArea = Vector256.ConditionalSelect(mask, vArea, vMaxArea);
+                        vBestIdx = Vector256.ConditionalSelect(mask.AsInt32(), vCurIdx, vBestIdx);
+
+                        vCurIdx = Vector256.Add(vCurIdx, vStep8);
+                    }
+
+                    vMaxArea.Store(pAreas);
+                    vBestIdx.Store(pIndices);
+
+                    for (int k = 0; k < 8; k++)
+                    {
+                        if (pAreas[k] > maxArea)
+                        {
+                            maxArea = pAreas[k];
+                            bestIndex = currentBucketStart + pIndices[k];
+                        }
+                    }
+                }
+
                 for (; p < currentBucketEnd; p++)
                 {
                     float area = MathF.Abs(v * pX[p] + u * pY[p] - c);
@@ -226,6 +306,9 @@ public static unsafe class LttbKernels
             pOutY[0] = pY[0];
             int a = 0;
 
+            float* pAreas = stackalloc float[16];
+            int* pIndices = stackalloc int[16];
+
             for (int i = 0; i < targetPoints - 2; i++)
             {
                 int currentBucketStart = (int)((i + 0) * bucketSize) + 1;
@@ -278,7 +361,98 @@ public static unsafe class LttbKernels
                 float maxArea = -1f;
                 int bestIndex = currentBucketStart;
 
-                for (int p = currentBucketStart; p < currentBucketEnd; p++)
+                int p = currentBucketStart;
+                int bucketPoints = currentBucketEnd - currentBucketStart;
+
+                float kx = v * xStep;
+                float k0 = v * xStart - c;
+
+                if (Avx512F.IsSupported && bucketPoints >= 16)
+                {
+                    var vu = Vector512.Create(u);
+                    var vMaxArea = Vector512.Create(-1f);
+                    var vBestIdx = Vector512.Create(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                    var vCurIdx = Vector512.Create(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                    var vStep16 = Vector512.Create(16);
+
+                    float initBase = k0 + p * kx;
+                    var vCurBase = Vector512.Create(
+                        initBase, initBase + kx, initBase + 2 * kx, initBase + 3 * kx,
+                        initBase + 4 * kx, initBase + 5 * kx, initBase + 6 * kx, initBase + 7 * kx,
+                        initBase + 8 * kx, initBase + 9 * kx, initBase + 10 * kx, initBase + 11 * kx,
+                        initBase + 12 * kx, initBase + 13 * kx, initBase + 14 * kx, initBase + 15 * kx
+                    );
+                    var vDeltaBase = Vector512.Create(16 * kx);
+
+                    for (; p <= currentBucketEnd - 16; p += 16)
+                    {
+                        var vy = Vector512.Load(pY + p);
+                        var vLin = Avx512F.FusedMultiplyAdd(vu, vy, vCurBase);
+                        var vArea = Vector512.Abs(vLin);
+
+                        var mask = Vector512.GreaterThan(vArea, vMaxArea);
+                        vMaxArea = Vector512.ConditionalSelect(mask, vArea, vMaxArea);
+                        vBestIdx = Vector512.ConditionalSelect(mask.AsInt32(), vCurIdx, vBestIdx);
+
+                        vCurBase = Vector512.Add(vCurBase, vDeltaBase);
+                        vCurIdx = Vector512.Add(vCurIdx, vStep16);
+                    }
+
+                    vMaxArea.Store(pAreas);
+                    vBestIdx.Store(pIndices);
+
+                    for (int k = 0; k < 16; k++)
+                    {
+                        if (pAreas[k] > maxArea)
+                        {
+                            maxArea = pAreas[k];
+                            bestIndex = currentBucketStart + pIndices[k];
+                        }
+                    }
+                }
+                else if (Avx2.IsSupported && bucketPoints >= 8)
+                {
+                    var vu = Vector256.Create(u);
+                    var vMaxArea = Vector256.Create(-1f);
+                    var vBestIdx = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+                    var vCurIdx = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+                    var vStep8 = Vector256.Create(8);
+
+                    float initBase = k0 + p * kx;
+                    var vCurBase = Vector256.Create(
+                        initBase, initBase + kx, initBase + 2 * kx, initBase + 3 * kx,
+                        initBase + 4 * kx, initBase + 5 * kx, initBase + 6 * kx, initBase + 7 * kx
+                    );
+                    var vDeltaBase = Vector256.Create(8 * kx);
+
+                    for (; p <= currentBucketEnd - 8; p += 8)
+                    {
+                        var vy = Vector256.Load(pY + p);
+                        var vLin = Vector256.Add(Vector256.Multiply(vu, vy), vCurBase);
+                        var vArea = Vector256.Abs(vLin);
+
+                        var mask = Vector256.GreaterThan(vArea, vMaxArea);
+                        vMaxArea = Vector256.ConditionalSelect(mask, vArea, vMaxArea);
+                        vBestIdx = Vector256.ConditionalSelect(mask.AsInt32(), vCurIdx, vBestIdx);
+
+                        vCurBase = Vector256.Add(vCurBase, vDeltaBase);
+                        vCurIdx = Vector256.Add(vCurIdx, vStep8);
+                    }
+
+                    vMaxArea.Store(pAreas);
+                    vBestIdx.Store(pIndices);
+
+                    for (int k = 0; k < 8; k++)
+                    {
+                        if (pAreas[k] > maxArea)
+                        {
+                            maxArea = pAreas[k];
+                            bestIndex = currentBucketStart + pIndices[k];
+                        }
+                    }
+                }
+
+                for (; p < currentBucketEnd; p++)
                 {
                     float px = xStart + p * xStep;
                     float area = MathF.Abs(v * px + u * pY[p] - c);
