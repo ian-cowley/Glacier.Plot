@@ -14,7 +14,7 @@ public class GpuPlotTests
         bool nvidia = GpuPlotAccelerator.IsNvidiaAvailable;
         bool amd = GpuPlotAccelerator.IsAmdAvailable;
         bool any = GpuPlotAccelerator.IsGpuAvailable;
-        Assert.True(true);
+        Assert.Equal(any, nvidia || amd);
     }
 
     [Fact]

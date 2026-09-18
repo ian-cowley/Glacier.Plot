@@ -15,6 +15,17 @@ public sealed class Figure : IDisposable
     private readonly List<IPlottable> _plottables = new();
     private int _paletteIndex = 0;
 
+    private static readonly SKTypeface s_defaultTypeface = SKTypeface.FromFamilyName("Arial");
+    private static readonly SKTypeface s_boldTypeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold);
+
+    private readonly SKPaint _bgPaint = new() { Style = SKPaintStyle.Fill };
+    private readonly SKPaint _dataBgPaint = new() { Style = SKPaintStyle.Fill };
+    private readonly SKPaint _gridPaint = new() { StrokeWidth = 1.0f, Style = SKPaintStyle.Stroke, IsAntialias = true };
+    private readonly SKPaint _axisLinePaint = new() { StrokeWidth = 1.5f, Style = SKPaintStyle.Stroke, IsAntialias = true };
+    private readonly SKPaint _labelPaint = new() { TextSize = 11.0f, IsAntialias = true, Typeface = s_defaultTypeface };
+    private readonly SKPaint _titlePaint = new() { TextSize = 16.0f, IsAntialias = true, Typeface = s_boldTypeface };
+    private readonly SKPaint _axisTitlePaint = new() { TextSize = 12.0f, IsAntialias = true, Typeface = s_boldTypeface };
+
     public string? Title { get; set; }
     public Axis XAxis { get; } = new();
     public Axis YAxis { get; } = new();
@@ -32,6 +43,28 @@ public sealed class Figure : IDisposable
         _paletteIndex++;
         return color;
     }
+
+    public SignalPlot PlotLine(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, string? label = null, SKColor? color = null)
+    {
+        var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
+        var plot = new SignalPlot(x, y, style) { Label = label };
+        _plottables.Add(plot);
+        return plot;
+    }
+
+    public SignalPlot PlotSignal(ReadOnlyMemory<float> y, float xStart = 0f, float xStep = 1f, string? label = null, SKColor? color = null)
+    {
+        var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
+        var plot = new SignalPlot(y, xStart, xStep, style) { Label = label };
+        _plottables.Add(plot);
+        return plot;
+    }
+
+    public SignalPlot PlotLine(float[] x, float[] y, string? label = null, SKColor? color = null)
+        => PlotLine((ReadOnlyMemory<float>)x, (ReadOnlyMemory<float>)y, label, color);
+
+    public SignalPlot PlotSignal(float[] y, float xStart = 0f, float xStep = 1f, string? label = null, SKColor? color = null)
+        => PlotSignal((ReadOnlyMemory<float>)y, xStart, xStep, label, color);
 
     public SignalPlot PlotLine(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, SKColor? color = null)
     {
@@ -136,40 +169,20 @@ public sealed class Figure : IDisposable
         var conv = new CoordinateConverter(dims, limits);
 
         // 1. Fill Figure Background
-        using var bgPaint = new SKPaint { Color = Theme.FigureBackground, Style = SKPaintStyle.Fill };
-        canvas.DrawRect(dims.FigureRect, bgPaint);
+        _bgPaint.Color = Theme.FigureBackground;
+        canvas.DrawRect(dims.FigureRect, _bgPaint);
 
         // 2. Fill Data Area Background
-        using var dataBgPaint = new SKPaint { Color = Theme.DataBackground, Style = SKPaintStyle.Fill };
-        canvas.DrawRect(dims.DataRect, dataBgPaint);
+        _dataBgPaint.Color = Theme.DataBackground;
+        canvas.DrawRect(dims.DataRect, _dataBgPaint);
 
         // 3. Grid Lines & Ticks Calculation
         var xTicks = XAxis.ShowTicks ? TickGenerator.Generate(limits.XMin, limits.XMax, 8) : [];
         var yTicks = YAxis.ShowTicks ? TickGenerator.Generate(limits.YMin, limits.YMax, 6) : [];
 
-        using var gridPaint = new SKPaint
-        {
-            Color = Theme.MajorGridColor,
-            StrokeWidth = 1.0f,
-            Style = SKPaintStyle.Stroke,
-            IsAntialias = true
-        };
-
-        using var axisLinePaint = new SKPaint
-        {
-            Color = Theme.AxisColor,
-            StrokeWidth = 1.5f,
-            Style = SKPaintStyle.Stroke,
-            IsAntialias = true
-        };
-
-        using var labelPaint = new SKPaint
-        {
-            Color = Theme.LabelColor,
-            TextSize = 11.0f,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial")
-        };
+        _gridPaint.Color = Theme.MajorGridColor;
+        _axisLinePaint.Color = Theme.AxisColor;
+        _labelPaint.Color = Theme.LabelColor;
 
         // Draw Grids
         if (XAxis.ShowGrid)
@@ -178,7 +191,7 @@ public sealed class Figure : IDisposable
             {
                 float px = conv.GetPixelX(t.Value);
                 if (px >= dims.DataLeft && px <= dims.DataRight)
-                    canvas.DrawLine(px, dims.DataTop, px, dims.DataBottom, gridPaint);
+                    canvas.DrawLine(px, dims.DataTop, px, dims.DataBottom, _gridPaint);
             }
         }
 
@@ -188,7 +201,7 @@ public sealed class Figure : IDisposable
             {
                 float py = conv.GetPixelY(t.Value);
                 if (py >= dims.DataTop && py <= dims.DataBottom)
-                    canvas.DrawLine(dims.DataLeft, py, dims.DataRight, py, gridPaint);
+                    canvas.DrawLine(dims.DataLeft, py, dims.DataRight, py, _gridPaint);
             }
         }
 
@@ -202,7 +215,7 @@ public sealed class Figure : IDisposable
         canvas.Restore();
 
         // 5. Draw Axis Bounding Box
-        canvas.DrawRect(dims.DataRect, axisLinePaint);
+        canvas.DrawRect(dims.DataRect, _axisLinePaint);
 
         // 6. Draw Tick Marks & Labels
         if (XAxis.ShowTicks)
@@ -212,9 +225,9 @@ public sealed class Figure : IDisposable
                 float px = conv.GetPixelX(t.Value);
                 if (px < dims.DataLeft - 1 || px > dims.DataRight + 1) continue;
 
-                canvas.DrawLine(px, dims.DataBottom, px, dims.DataBottom + 5f, axisLinePaint);
-                float textWidth = labelPaint.MeasureText(t.Label);
-                canvas.DrawText(t.Label, px - textWidth * 0.5f, dims.DataBottom + 18f, labelPaint);
+                canvas.DrawLine(px, dims.DataBottom, px, dims.DataBottom + 5f, _axisLinePaint);
+                float textWidth = _labelPaint.MeasureText(t.Label);
+                canvas.DrawText(t.Label, px - textWidth * 0.5f, dims.DataBottom + 18f, _labelPaint);
             }
         }
 
@@ -225,43 +238,29 @@ public sealed class Figure : IDisposable
                 float py = conv.GetPixelY(t.Value);
                 if (py < dims.DataTop - 1 || py > dims.DataBottom + 1) continue;
 
-                canvas.DrawLine(dims.DataLeft - 5f, py, dims.DataLeft, py, axisLinePaint);
-                float textWidth = labelPaint.MeasureText(t.Label);
-                canvas.DrawText(t.Label, dims.DataLeft - textWidth - 8f, py + 4f, labelPaint);
+                canvas.DrawLine(dims.DataLeft - 5f, py, dims.DataLeft, py, _axisLinePaint);
+                float textWidth = _labelPaint.MeasureText(t.Label);
+                canvas.DrawText(t.Label, dims.DataLeft - textWidth - 8f, py + 4f, _labelPaint);
             }
         }
 
         // 7. Axis Titles
-        using var titlePaint = new SKPaint
-        {
-            Color = Theme.TitleColor,
-            TextSize = 16.0f,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
-        };
-
+        _titlePaint.Color = Theme.TitleColor;
         if (!string.IsNullOrWhiteSpace(Title))
         {
-            float titleWidth = titlePaint.MeasureText(Title);
+            float titleWidth = _titlePaint.MeasureText(Title);
             float titleX = dims.DataLeft + (dims.DataWidth - titleWidth) * 0.5f;
             float titleY = dims.MarginTop * 0.65f;
-            canvas.DrawText(Title, titleX, titleY, titlePaint);
+            canvas.DrawText(Title, titleX, titleY, _titlePaint);
         }
 
-        using var axisTitlePaint = new SKPaint
-        {
-            Color = Theme.LabelColor,
-            TextSize = 12.0f,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
-        };
-
+        _axisTitlePaint.Color = Theme.LabelColor;
         if (!string.IsNullOrWhiteSpace(XAxis.Label))
         {
-            float xLabelWidth = axisTitlePaint.MeasureText(XAxis.Label);
+            float xLabelWidth = _axisTitlePaint.MeasureText(XAxis.Label);
             float xPos = dims.DataLeft + (dims.DataWidth - xLabelWidth) * 0.5f;
             float yPos = height - 12f;
-            canvas.DrawText(XAxis.Label, xPos, yPos, axisTitlePaint);
+            canvas.DrawText(XAxis.Label, xPos, yPos, _axisTitlePaint);
         }
 
         if (!string.IsNullOrWhiteSpace(YAxis.Label))
@@ -269,8 +268,8 @@ public sealed class Figure : IDisposable
             canvas.Save();
             canvas.Translate(18f, dims.DataTop + dims.DataHeight * 0.5f);
             canvas.RotateDegrees(-90);
-            float yLabelWidth = axisTitlePaint.MeasureText(YAxis.Label);
-            canvas.DrawText(YAxis.Label, -yLabelWidth * 0.5f, 0, axisTitlePaint);
+            float yLabelWidth = _axisTitlePaint.MeasureText(YAxis.Label);
+            canvas.DrawText(YAxis.Label, -yLabelWidth * 0.5f, 0, _axisTitlePaint);
             canvas.Restore();
         }
 
@@ -339,5 +338,12 @@ public sealed class Figure : IDisposable
     public void Dispose()
     {
         Clear();
+        _bgPaint.Dispose();
+        _dataBgPaint.Dispose();
+        _gridPaint.Dispose();
+        _axisLinePaint.Dispose();
+        _labelPaint.Dispose();
+        _titlePaint.Dispose();
+        _axisTitlePaint.Dispose();
     }
 }

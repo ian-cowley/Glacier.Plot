@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -26,16 +27,6 @@ public static unsafe class GpuPlotAccelerator
     private static IntPtr s_fnMinMax;
     private static IntPtr s_fnTransformCoords;
     private static IntPtr s_fnBucketAvgs;
-
-    // Persistent pooled device buffers
-    private static IntPtr s_dInX;
-    private static IntPtr s_dInY;
-    private static IntPtr s_dOutX;
-    private static IntPtr s_dOutY;
-    private static nuint s_capInX;
-    private static nuint s_capInY;
-    private static nuint s_capOutX;
-    private static nuint s_capOutY;
 
     private static bool s_amdInitialized;
     private static bool s_amdAvailable;
@@ -381,33 +372,100 @@ public static unsafe class GpuPlotAccelerator
 
     #endregion
 
-    #region Buffer Pooling
+    #region Buffer Pooling & Execution Context
 
-    private static void EnsurePoolBuffers(nuint capInX, nuint capInY, nuint capOutX, nuint capOutY)
+    internal sealed class GpuPlotStreamSlot : IDisposable
     {
-        if (capInX > s_capInX)
+        private static readonly ConcurrentQueue<GpuPlotStreamSlot> s_pool = new();
+        private static int s_poolCount;
+        private const int MaxPoolSize = 64;
+
+        public IntPtr Stream { get; private set; }
+        public IntPtr dInX { get; private set; }
+        public IntPtr dInY { get; private set; }
+        public IntPtr dOutX { get; private set; }
+        public IntPtr dOutY { get; private set; }
+        public nuint capInX { get; private set; }
+        public nuint capInY { get; private set; }
+        public nuint capOutX { get; private set; }
+        public nuint capOutY { get; private set; }
+        private bool _disposed;
+
+        public GpuPlotStreamSlot()
         {
-            if (s_dInX != IntPtr.Zero) CuDriver.MemFree(s_dInX);
-            CuDriver.MemAlloc(out s_dInX, capInX);
-            s_capInX = capInX;
+            int res = CuDriver.StreamCreate(out IntPtr stream, 0);
+            if (res != 0)
+            {
+                throw new InvalidOperationException($"Failed to create CUDA stream: {res}");
+            }
+            Stream = stream;
         }
-        if (capInY > s_capInY)
+
+        public static GpuPlotStreamSlot Rent()
         {
-            if (s_dInY != IntPtr.Zero) CuDriver.MemFree(s_dInY);
-            CuDriver.MemAlloc(out s_dInY, capInY);
-            s_capInY = capInY;
+            while (s_pool.TryDequeue(out var slot))
+            {
+                Interlocked.Decrement(ref s_poolCount);
+                if (!slot._disposed) return slot;
+            }
+            return new GpuPlotStreamSlot();
         }
-        if (capOutX > s_capOutX)
+
+        public static void Return(GpuPlotStreamSlot? slot)
         {
-            if (s_dOutX != IntPtr.Zero) CuDriver.MemFree(s_dOutX);
-            CuDriver.MemAlloc(out s_dOutX, capOutX);
-            s_capOutX = capOutX;
+            if (slot == null || slot._disposed) return;
+            if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
+            {
+                s_pool.Enqueue(slot);
+            }
+            else
+            {
+                Interlocked.Decrement(ref s_poolCount);
+                slot.Dispose();
+            }
         }
-        if (capOutY > s_capOutY)
+
+        public void EnsureCapacity(nuint reqInX, nuint reqInY, nuint reqOutX, nuint reqOutY)
         {
-            if (s_dOutY != IntPtr.Zero) CuDriver.MemFree(s_dOutY);
-            CuDriver.MemAlloc(out s_dOutY, capOutY);
-            s_capOutY = capOutY;
+            if (reqInX > capInX)
+            {
+                if (dInX != IntPtr.Zero) CuDriver.MemFree(dInX);
+                CuDriver.MemAlloc(out IntPtr ptr, reqInX);
+                dInX = ptr;
+                capInX = reqInX;
+            }
+            if (reqInY > capInY)
+            {
+                if (dInY != IntPtr.Zero) CuDriver.MemFree(dInY);
+                CuDriver.MemAlloc(out IntPtr ptr, reqInY);
+                dInY = ptr;
+                capInY = reqInY;
+            }
+            if (reqOutX > capOutX)
+            {
+                if (dOutX != IntPtr.Zero) CuDriver.MemFree(dOutX);
+                CuDriver.MemAlloc(out IntPtr ptr, reqOutX);
+                dOutX = ptr;
+                capOutX = reqOutX;
+            }
+            if (reqOutY > capOutY)
+            {
+                if (dOutY != IntPtr.Zero) CuDriver.MemFree(dOutY);
+                CuDriver.MemAlloc(out IntPtr ptr, reqOutY);
+                dOutY = ptr;
+                capOutY = reqOutY;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            if (dInX != IntPtr.Zero) { CuDriver.MemFree(dInX); dInX = IntPtr.Zero; }
+            if (dInY != IntPtr.Zero) { CuDriver.MemFree(dInY); dInY = IntPtr.Zero; }
+            if (dOutX != IntPtr.Zero) { CuDriver.MemFree(dOutX); dOutX = IntPtr.Zero; }
+            if (dOutY != IntPtr.Zero) { CuDriver.MemFree(dOutY); dOutY = IntPtr.Zero; }
+            if (Stream != IntPtr.Zero) { CuDriver.StreamDestroy(Stream); Stream = IntPtr.Zero; }
         }
     }
 
@@ -428,61 +486,53 @@ public static unsafe class GpuPlotAccelerator
             nuint bytesOut = (nuint)(targetPoints * sizeof(float));
 
             CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
+            var slot = GpuPlotStreamSlot.Rent();
+            try
             {
-                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
+                slot.EnsureCapacity(bytesIn, bytesIn, bytesOut, bytesOut);
 
                 fixed (float* pX = xValues, pY = yValues, pOutX = outX, pOutY = outY)
                 {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
+                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pX, bytesIn, slot.Stream);
+                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pY, bytesIn, slot.Stream);
 
-                    IntPtr[] kernelParams = new IntPtr[7];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(targetPixelWidth, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
+                    IntPtr dInX = slot.dInX;
+                    IntPtr dInY = slot.dInY;
+                    IntPtr dOutX = slot.dOutX;
+                    IntPtr dOutY = slot.dOutY;
 
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
+                    void** pArgs = stackalloc void*[7];
+                    pArgs[0] = &dInX;
+                    pArgs[1] = &dInY;
+                    pArgs[2] = &dOutX;
+                    pArgs[3] = &dOutY;
+                    pArgs[4] = &totalPoints;
+                    pArgs[5] = &targetPixelWidth;
+                    pArgs[6] = &bucketSize;
 
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
+                    uint blockSize = 256;
+                    uint gridSize = (uint)((targetPixelWidth + blockSize - 1) / blockSize);
+
+                    int launchRes = CuDriver.LaunchKernel(
+                        s_fnMinMax,
+                        gridSize, 1, 1,
+                        blockSize, 1, 1,
+                        0, slot.Stream,
+                        (IntPtr)pArgs,
+                        IntPtr.Zero);
+
+                    if (launchRes == 0)
                     {
-                        uint blockSize = 256;
-                        uint gridSize = (uint)((targetPixelWidth + blockSize - 1) / blockSize);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnMinMax,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pOutX, s_dOutX, bytesOut);
-                            CuDriver.MemcpyDtoH((IntPtr)pOutY, s_dOutY, bytesOut);
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free();
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pOutX, slot.dOutX, bytesOut, slot.Stream);
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pOutY, slot.dOutY, bytesOut, slot.Stream);
+                        CuDriver.StreamSynchronize(slot.Stream);
+                        return true;
                     }
                 }
+            }
+            finally
+            {
+                GpuPlotStreamSlot.Return(slot);
             }
         }
         catch
@@ -511,71 +561,58 @@ public static unsafe class GpuPlotAccelerator
         {
             nuint bytes = (nuint)(n * sizeof(float));
             CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
+            var slot = GpuPlotStreamSlot.Rent();
+            try
             {
-                EnsurePoolBuffers(bytes, bytes, bytes, bytes);
+                slot.EnsureCapacity(bytes, bytes, bytes, bytes);
 
                 fixed (float* pXIn = xIn, pYIn = yIn, pXOut = xOut, pYOut = yOut)
                 {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pXIn, bytes);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pYIn, bytes);
+                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pXIn, bytes, slot.Stream);
+                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pYIn, bytes, slot.Stream);
 
-                    IntPtr[] kernelParams = new IntPtr[11];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(n, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(xMin, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(yMin, GCHandleType.Pinned);
-                    GCHandle h7 = GCHandle.Alloc(pxPerX, GCHandleType.Pinned);
-                    GCHandle h8 = GCHandle.Alloc(pxPerY, GCHandleType.Pinned);
-                    GCHandle h9 = GCHandle.Alloc(dataLeft, GCHandleType.Pinned);
-                    GCHandle h10 = GCHandle.Alloc(dataBottom, GCHandleType.Pinned);
+                    IntPtr dInX = slot.dInX;
+                    IntPtr dInY = slot.dInY;
+                    IntPtr dOutX = slot.dOutX;
+                    IntPtr dOutY = slot.dOutY;
 
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
-                    kernelParams[7] = h7.AddrOfPinnedObject();
-                    kernelParams[8] = h8.AddrOfPinnedObject();
-                    kernelParams[9] = h9.AddrOfPinnedObject();
-                    kernelParams[10] = h10.AddrOfPinnedObject();
+                    void** pArgs = stackalloc void*[11];
+                    pArgs[0] = &dInX;
+                    pArgs[1] = &dInY;
+                    pArgs[2] = &dOutX;
+                    pArgs[3] = &dOutY;
+                    pArgs[4] = &n;
+                    pArgs[5] = &xMin;
+                    pArgs[6] = &yMin;
+                    pArgs[7] = &pxPerX;
+                    pArgs[8] = &pxPerY;
+                    pArgs[9] = &dataLeft;
+                    pArgs[10] = &dataBottom;
 
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
+                    uint blockSize = 256;
+                    uint itemsPerBlock = blockSize * 4;
+                    uint gridSize = (uint)((n + itemsPerBlock - 1) / itemsPerBlock);
+
+                    int launchRes = CuDriver.LaunchKernel(
+                        s_fnTransformCoords,
+                        gridSize, 1, 1,
+                        blockSize, 1, 1,
+                        0, slot.Stream,
+                        (IntPtr)pArgs,
+                        IntPtr.Zero);
+
+                    if (launchRes == 0)
                     {
-                        uint blockSize = 256;
-                        uint itemsPerBlock = blockSize * 4;
-                        uint gridSize = (uint)((n + itemsPerBlock - 1) / itemsPerBlock);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnTransformCoords,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pXOut, s_dOutX, bytes);
-                            CuDriver.MemcpyDtoH((IntPtr)pYOut, s_dOutY, bytes);
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free(); h7.Free();
-                        h8.Free(); h9.Free(); h10.Free();
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pXOut, slot.dOutX, bytes, slot.Stream);
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pYOut, slot.dOutY, bytes, slot.Stream);
+                        CuDriver.StreamSynchronize(slot.Stream);
+                        return true;
                     }
                 }
+            }
+            finally
+            {
+                GpuPlotStreamSlot.Return(slot);
             }
         }
         catch
@@ -602,61 +639,53 @@ public static unsafe class GpuPlotAccelerator
             nuint bytesOut = (nuint)(numBuckets * sizeof(float));
 
             CuDriver.CtxSetCurrent(s_cuContext);
-            lock (s_initLock)
+            var slot = GpuPlotStreamSlot.Rent();
+            try
             {
-                EnsurePoolBuffers(bytesIn, bytesIn, bytesOut, bytesOut);
+                slot.EnsureCapacity(bytesIn, bytesIn, bytesOut, bytesOut);
 
                 fixed (float* pX = xIn, pY = yIn, pAvgX = avgX, pAvgY = avgY)
                 {
-                    CuDriver.MemcpyHtoD(s_dInX, (IntPtr)pX, bytesIn);
-                    CuDriver.MemcpyHtoD(s_dInY, (IntPtr)pY, bytesIn);
+                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pX, bytesIn, slot.Stream);
+                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pY, bytesIn, slot.Stream);
 
-                    IntPtr[] kernelParams = new IntPtr[7];
-                    GCHandle h0 = GCHandle.Alloc(s_dInX, GCHandleType.Pinned);
-                    GCHandle h1 = GCHandle.Alloc(s_dInY, GCHandleType.Pinned);
-                    GCHandle h2 = GCHandle.Alloc(s_dOutX, GCHandleType.Pinned);
-                    GCHandle h3 = GCHandle.Alloc(s_dOutY, GCHandleType.Pinned);
-                    GCHandle h4 = GCHandle.Alloc(totalPoints, GCHandleType.Pinned);
-                    GCHandle h5 = GCHandle.Alloc(numBuckets, GCHandleType.Pinned);
-                    GCHandle h6 = GCHandle.Alloc(bucketSize, GCHandleType.Pinned);
+                    IntPtr dInX = slot.dInX;
+                    IntPtr dInY = slot.dInY;
+                    IntPtr dOutX = slot.dOutX;
+                    IntPtr dOutY = slot.dOutY;
 
-                    kernelParams[0] = h0.AddrOfPinnedObject();
-                    kernelParams[1] = h1.AddrOfPinnedObject();
-                    kernelParams[2] = h2.AddrOfPinnedObject();
-                    kernelParams[3] = h3.AddrOfPinnedObject();
-                    kernelParams[4] = h4.AddrOfPinnedObject();
-                    kernelParams[5] = h5.AddrOfPinnedObject();
-                    kernelParams[6] = h6.AddrOfPinnedObject();
+                    void** pArgs = stackalloc void*[7];
+                    pArgs[0] = &dInX;
+                    pArgs[1] = &dInY;
+                    pArgs[2] = &dOutX;
+                    pArgs[3] = &dOutY;
+                    pArgs[4] = &totalPoints;
+                    pArgs[5] = &numBuckets;
+                    pArgs[6] = &bucketSize;
 
-                    GCHandle hArray = GCHandle.Alloc(kernelParams, GCHandleType.Pinned);
-                    try
+                    uint blockSize = 256;
+                    uint gridSize = (uint)((numBuckets + blockSize - 1) / blockSize);
+
+                    int launchRes = CuDriver.LaunchKernel(
+                        s_fnBucketAvgs,
+                        gridSize, 1, 1,
+                        blockSize, 1, 1,
+                        0, slot.Stream,
+                        (IntPtr)pArgs,
+                        IntPtr.Zero);
+
+                    if (launchRes == 0)
                     {
-                        uint blockSize = 256;
-                        uint gridSize = (uint)((numBuckets + blockSize - 1) / blockSize);
-
-                        int launchRes = CuDriver.LaunchKernel(
-                            s_fnBucketAvgs,
-                            gridSize, 1, 1,
-                            blockSize, 1, 1,
-                            0, IntPtr.Zero,
-                            hArray.AddrOfPinnedObject(),
-                            IntPtr.Zero);
-
-                        if (launchRes == 0)
-                        {
-                            CuDriver.CtxSynchronize();
-                            CuDriver.MemcpyDtoH((IntPtr)pAvgX, s_dOutX, bytesOut);
-                            CuDriver.MemcpyDtoH((IntPtr)pAvgY, s_dOutY, bytesOut);
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        hArray.Free();
-                        h0.Free(); h1.Free(); h2.Free(); h3.Free();
-                        h4.Free(); h5.Free(); h6.Free();
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pAvgX, slot.dOutX, bytesOut, slot.Stream);
+                        CuDriver.MemcpyDtoHAsync((IntPtr)pAvgY, slot.dOutY, bytesOut, slot.Stream);
+                        CuDriver.StreamSynchronize(slot.Stream);
+                        return true;
                     }
                 }
+            }
+            finally
+            {
+                GpuPlotStreamSlot.Return(slot);
             }
         }
         catch

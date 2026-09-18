@@ -45,10 +45,22 @@ public static class PolarisPlotExtensions
         return arr;
     }
 
+    /// <summary>
+    /// Returns a ReadOnlyMemory&lt;float&gt; from an ISeries with zero-copy when the underlying series is Float32Series.
+    /// </summary>
+    public static ReadOnlyMemory<float> AsFloatMemory(this ISeries series)
+    {
+        if (series is Float32Series f32)
+        {
+            return f32.Memory;
+        }
+        return ToFloatArray(series);
+    }
+
     public static SignalPlot PlotLine(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, SKColor? color = null)
     {
-        float[] x = xSeries.ToFloatArray();
-        float[] y = ySeries.ToFloatArray();
+        var x = xSeries.AsFloatMemory();
+        var y = ySeries.AsFloatMemory();
         return fig.PlotLine(x, y, label ?? ySeries.Name, color);
     }
 

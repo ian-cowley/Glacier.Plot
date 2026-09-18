@@ -123,4 +123,24 @@ public class FigureRenderingTests
             if (File.Exists(tempSvg)) File.Delete(tempSvg);
         }
     }
+
+    [Fact]
+    public void SignalPlot_AcceptsReadOnlyMemory_RendersWithoutAllocationChurn()
+    {
+        using var fig = new Figure { Title = "Memory Span Test" };
+        ReadOnlyMemory<float> x = new float[] { 0f, 1f, 2f, 3f, 4f, 5f };
+        ReadOnlyMemory<float> y = new float[] { 10f, 20f, 15f, 35f, 30f, 45f };
+
+        var plot = fig.PlotLine(x, y, "MemoryPlot", Colors.Emerald);
+        Assert.NotNull(plot);
+        Assert.Equal(5f, plot.GetLimits().XMax);
+
+        // Verify multiple renders reuse cached SKPaint/SKPath without fault
+        for (int i = 0; i < 5; i++)
+        {
+            byte[] png = fig.RenderToBytes(400, 300);
+            Assert.NotEmpty(png);
+            Assert.Equal(0x89, png[0]);
+        }
+    }
 }

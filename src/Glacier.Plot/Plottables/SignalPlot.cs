@@ -10,33 +10,83 @@ using SkiaSharp;
 /// Ultra-high-speed continuous line plot designed for datasets from tens of points to tens of millions of points.
 /// Automatically applies SIMD LTTB / MinMax downsampling when points exceed screen resolution.
 /// </summary>
-public sealed class SignalPlot : IPlottable
+public sealed class SignalPlot : IPlottable, IDisposable
 {
-    private readonly float[]? _xValues;
-    private readonly float[] _yValues;
+    private readonly ReadOnlyMemory<float> _xMemory;
+    private readonly ReadOnlyMemory<float> _yMemory;
     private readonly int _count;
     private readonly bool _isUniform;
     private readonly float _xStart;
     private readonly float _xStep;
     private AxisLimits _cachedLimits = AxisLimits.Empty;
 
+    // Reusable SKPath and SKPaint fields
+    private readonly SKPath _path = new();
+    private readonly SKPath _fillPath = new();
+    private readonly SKPaint _fillPaint = new() { Style = SKPaintStyle.Fill, IsAntialias = true };
+    private readonly SKPaint _strokePaint = new()
+    {
+        Style = SKPaintStyle.Stroke,
+        IsAntialias = true,
+        StrokeCap = SKStrokeCap.Round,
+        StrokeJoin = SKStrokeJoin.Round
+    };
+    private readonly SKPaint _markerPaint = new() { Style = SKPaintStyle.Fill, IsAntialias = true };
+
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new();
     public DecimationStrategy Decimation { get; set; } = DecimationStrategy.Auto;
 
     /// <summary>
+    /// Creates a signal plot with explicit X and Y coordinates via ReadOnlyMemory without heap array duplication.
+    /// </summary>
+    public SignalPlot(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, PlotStyle? style = null)
+    {
+        if (x.Length != y.Length)
+            throw new ArgumentException("X and Y memories must have identical length.");
+
+        _count = x.Length;
+        _xMemory = x;
+        _yMemory = y;
+        _isUniform = false;
+        if (style != null) Style = style;
+    }
+
+    /// <summary>
+    /// Creates a signal plot with uniformly spaced Y coordinates via ReadOnlyMemory (X = xStart + i * xStep).
+    /// </summary>
+    public SignalPlot(ReadOnlyMemory<float> y, float xStart = 0f, float xStep = 1f, PlotStyle? style = null)
+    {
+        _count = y.Length;
+        _yMemory = y;
+        _isUniform = true;
+        _xStart = xStart;
+        _xStep = xStep;
+        if (style != null) Style = style;
+    }
+
+    /// <summary>
+    /// Creates a signal plot with explicit X and Y arrays without duplication.
+    /// </summary>
+    public SignalPlot(float[] x, float[] y, PlotStyle? style = null)
+        : this((ReadOnlyMemory<float>)x, (ReadOnlyMemory<float>)y, style)
+    {
+    }
+
+    /// <summary>
+    /// Creates a signal plot with uniformly spaced Y array.
+    /// </summary>
+    public SignalPlot(float[] y, float xStart = 0f, float xStep = 1f, PlotStyle? style = null)
+        : this((ReadOnlyMemory<float>)y, xStart, xStep, style)
+    {
+    }
+
+    /// <summary>
     /// Creates a signal plot with explicit X and Y coordinates.
     /// </summary>
     public SignalPlot(ReadOnlySpan<float> x, ReadOnlySpan<float> y, PlotStyle? style = null)
+        : this((ReadOnlyMemory<float>)x.ToArray(), (ReadOnlyMemory<float>)y.ToArray(), style)
     {
-        if (x.Length != y.Length)
-            throw new ArgumentException("X and Y spans must have identical length.");
-
-        _count = x.Length;
-        _xValues = x.ToArray();
-        _yValues = y.ToArray();
-        _isUniform = false;
-        if (style != null) Style = style;
     }
 
     /// <summary>
@@ -44,13 +94,8 @@ public sealed class SignalPlot : IPlottable
     /// Eliminates memory allocation for X coordinates.
     /// </summary>
     public SignalPlot(ReadOnlySpan<float> y, float xStart = 0f, float xStep = 1f, PlotStyle? style = null)
+        : this((ReadOnlyMemory<float>)y.ToArray(), xStart, xStep, style)
     {
-        _count = y.Length;
-        _yValues = y.ToArray();
-        _isUniform = true;
-        _xStart = xStart;
-        _xStep = xStep;
-        if (style != null) Style = style;
     }
 
     public AxisLimits GetLimits()
@@ -65,11 +110,11 @@ public sealed class SignalPlot : IPlottable
 
         if (_isUniform)
         {
-            _cachedLimits = AxisLimits.FromDataUniform(_yValues.AsSpan(0, _count), _xStart, _xStep);
+            _cachedLimits = AxisLimits.FromDataUniform(_yMemory.Span[.._count], _xStart, _xStep);
         }
         else
         {
-            _cachedLimits = AxisLimits.FromData(_xValues.AsSpan(0, _count), _yValues.AsSpan(0, _count));
+            _cachedLimits = AxisLimits.FromData(_xMemory.Span[.._count], _yMemory.Span[.._count]);
         }
 
         return _cachedLimits;
@@ -101,14 +146,14 @@ public sealed class SignalPlot : IPlottable
             if (useMinMax)
             {
                 renderCount = _isUniform
-                    ? MinMaxKernels.DownsampleUniform(_yValues.AsSpan(0, _count), _xStart, _xStep, targetPixels, rentedX, rentedY)
-                    : MinMaxKernels.Downsample(_xValues.AsSpan(0, _count), _yValues.AsSpan(0, _count), targetPixels, rentedX, rentedY);
+                    ? MinMaxKernels.DownsampleUniform(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, rentedX, rentedY)
+                    : MinMaxKernels.Downsample(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, rentedX, rentedY);
             }
             else
             {
                 renderCount = _isUniform
-                    ? LttbKernels.DownsampleUniform(_yValues.AsSpan(0, _count), _xStart, _xStep, targetPixels, rentedX, rentedY)
-                    : LttbKernels.Downsample(_xValues.AsSpan(0, _count), _yValues.AsSpan(0, _count), targetPixels, rentedX, rentedY);
+                    ? LttbKernels.DownsampleUniform(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, rentedX, rentedY)
+                    : LttbKernels.Downsample(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, rentedX, rentedY);
             }
 
             renderX = rentedX.AsSpan(0, renderCount);
@@ -125,83 +170,68 @@ public sealed class SignalPlot : IPlottable
             }
             else
             {
-                renderX = _xValues.AsSpan(0, _count);
+                renderX = _xMemory.Span[.._count];
             }
-            renderY = _yValues.AsSpan(0, _count);
+            renderY = _yMemory.Span[.._count];
         }
 
         try
         {
-            using var path = new SKPath();
+            _path.Rewind();
             float firstPx = converter.GetPixelX(renderX[0]);
             float firstPy = converter.GetPixelY(renderY[0]);
-            path.MoveTo(firstPx, firstPy);
+            _path.MoveTo(firstPx, firstPy);
 
             for (int i = 1; i < renderCount; i++)
             {
                 float px = converter.GetPixelX(renderX[i]);
                 float py = converter.GetPixelY(renderY[i]);
-                path.LineTo(px, py);
+                _path.LineTo(px, py);
             }
 
             // Fill under curve if enabled
             if (Style.IsFilled)
             {
-                using var fillPath = new SKPath(path);
+                _fillPath.Rewind();
+                _fillPath.AddPath(_path);
                 float lastPx = converter.GetPixelX(renderX[renderCount - 1]);
                 float baselinePy = converter.GetPixelY(Math.Max(0, converter.Limits.YMin));
-                fillPath.LineTo(lastPx, baselinePy);
-                fillPath.LineTo(firstPx, baselinePy);
-                fillPath.Close();
+                _fillPath.LineTo(lastPx, baselinePy);
+                _fillPath.LineTo(firstPx, baselinePy);
+                _fillPath.Close();
 
-                using var fillPaint = new SKPaint
-                {
-                    Style = SKPaintStyle.Fill,
-                    Color = Style.Color.WithAlpha(Style.FillAlpha),
-                    IsAntialias = true
-                };
-                canvas.DrawPath(fillPath, fillPaint);
+                _fillPaint.Color = Style.Color.WithAlpha(Style.FillAlpha);
+                canvas.DrawPath(_fillPath, _fillPaint);
             }
 
             // Stroke line
-            using var strokePaint = new SKPaint
-            {
-                Style = SKPaintStyle.Stroke,
-                Color = Style.Color,
-                StrokeWidth = Style.StrokeWidth,
-                IsAntialias = true,
-                StrokeCap = SKStrokeCap.Round,
-                StrokeJoin = SKStrokeJoin.Round
-            };
+            _strokePaint.Color = Style.Color;
+            _strokePaint.StrokeWidth = Style.StrokeWidth;
 
             if (Style.Pattern == LinePattern.Dashed)
-                strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 6f], 0f);
+                _strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 6f], 0f);
             else if (Style.Pattern == LinePattern.Dotted)
-                strokePaint.PathEffect = SKPathEffect.CreateDash([2f, 4f], 0f);
+                _strokePaint.PathEffect = SKPathEffect.CreateDash([2f, 4f], 0f);
             else if (Style.Pattern == LinePattern.DashDot)
-                strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 4f, 2f, 4f], 0f);
+                _strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 4f, 2f, 4f], 0f);
+            else
+                _strokePaint.PathEffect = null;
 
-            canvas.DrawPath(path, strokePaint);
+            canvas.DrawPath(_path, _strokePaint);
 
             // Optional markers
             if (Style.Marker != MarkerShape.None && renderCount <= 500)
             {
-                using var markerPaint = new SKPaint
-                {
-                    Style = SKPaintStyle.Fill,
-                    Color = Style.Color,
-                    IsAntialias = true
-                };
-
+                _markerPaint.Color = Style.Color;
                 float r = Style.MarkerSize * 0.5f;
                 for (int i = 0; i < renderCount; i++)
                 {
                     float px = converter.GetPixelX(renderX[i]);
                     float py = converter.GetPixelY(renderY[i]);
                     if (Style.Marker == MarkerShape.Circle)
-                        canvas.DrawCircle(px, py, r, markerPaint);
+                        canvas.DrawCircle(px, py, r, _markerPaint);
                     else if (Style.Marker == MarkerShape.Square)
-                        canvas.DrawRect(px - r, py - r, r * 2, r * 2, markerPaint);
+                        canvas.DrawRect(px - r, py - r, r * 2, r * 2, _markerPaint);
                 }
             }
         }
@@ -210,5 +240,14 @@ public sealed class SignalPlot : IPlottable
             if (rentedX != null) ArrayPool<float>.Shared.Return(rentedX);
             if (rentedY != null) ArrayPool<float>.Shared.Return(rentedY);
         }
+    }
+
+    public void Dispose()
+    {
+        _path.Dispose();
+        _fillPath.Dispose();
+        _fillPaint.Dispose();
+        _strokePaint.Dispose();
+        _markerPaint.Dispose();
     }
 }
