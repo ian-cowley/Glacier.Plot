@@ -150,6 +150,13 @@ GpuPlotAccelerator.MinMaxDownsample(
 
 ---
 
+## 🆕 What's New in v1.0.2
+
+- **`GpuPlotStreamSlot` context pool** — eliminates the `s_initLock` global initialisation lock, allowing concurrent GPU plot rendering across multiple threads.
+- **22 tests** passing (100 %).
+
+---
+
 ## Credits
 
 Developed by Ian Cowley and Antigravity (Google DeepMind).
