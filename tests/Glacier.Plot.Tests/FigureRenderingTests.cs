@@ -143,4 +143,27 @@ public class FigureRenderingTests
             Assert.Equal(0x89, png[0]);
         }
     }
+
+    [Fact]
+    public void Figure_RendersToGlacierPng_WithValidHeader()
+    {
+        using var fig = new Figure { Title = "Glacier Graphics Render Test" };
+        fig.XAxis.Label = "Time (s)";
+        fig.YAxis.Label = "Amplitude";
+
+        float[] x = [0f, 1f, 2f, 3f, 4f];
+        float[] y = [0f, 2f, 8f, 18f, 32f];
+        fig.PlotLine(x, y, "Signal", Colors.Cyan);
+        fig.PlotScatter(x, y, "Samples", Colors.Amber);
+
+        byte[] png = Glacier.Plot.Interop.GlacierGraphicsPlotExtensions.RenderGlacierPng(fig, 400, 300);
+        Assert.NotNull(png);
+        Assert.True(png.Length > 64);
+        // Verify PNG magic numbers 0x89, 0x50, 0x4E, 0x47
+        Assert.Equal(0x89, png[0]);
+        Assert.Equal(0x50, png[1]);
+        Assert.Equal(0x4E, png[2]);
+        Assert.Equal(0x47, png[3]);
+    }
 }
+
