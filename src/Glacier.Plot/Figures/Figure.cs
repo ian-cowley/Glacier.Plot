@@ -3,28 +3,27 @@ namespace Glacier.Plot.Figures;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Glacier.Graphics;
+using Glacier.Graphics.Codecs.Png;
+using Glacier.Graphics.Raster;
+using Glacier.Graphics.Text;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 using Glacier.Plot.Plottables;
-using SkiaSharp;
+using Glacier.Plot.Rendering;
 
 /// <summary>
-/// High-performance 2D plotting canvas and figure orchestrator.
+/// High-performance 2D plotting canvas and figure orchestrator powered by Glacier.Graphics.
+/// 100% pure managed C# .NET 10 raster and vector pipeline with zero native C++ dependencies.
 /// </summary>
 public sealed class Figure : IDisposable
 {
     private readonly List<IPlottable> _plottables = new();
     private int _paletteIndex = 0;
 
-    private static readonly SKTypeface s_defaultTypeface = SKTypeface.FromFamilyName("Arial");
-    private static readonly SKTypeface s_boldTypeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold);
-
-    private readonly SKPaint _bgPaint = new() { Style = SKPaintStyle.Fill };
-    private readonly SKPaint _dataBgPaint = new() { Style = SKPaintStyle.Fill };
-    private readonly SKPaint _gridPaint = new() { StrokeWidth = 1.0f, Style = SKPaintStyle.Stroke, IsAntialias = true };
-    private readonly SKPaint _axisLinePaint = new() { StrokeWidth = 1.5f, Style = SKPaintStyle.Stroke, IsAntialias = true };
-    private readonly SKPaint _labelPaint = new() { TextSize = 11.0f, IsAntialias = true, Typeface = s_defaultTypeface };
-    private readonly SKPaint _titlePaint = new() { TextSize = 16.0f, IsAntialias = true, Typeface = s_boldTypeface };
-    private readonly SKPaint _axisTitlePaint = new() { TextSize = 12.0f, IsAntialias = true, Typeface = s_boldTypeface };
+    private static readonly Font s_labelFont = new(11.0f);
+    private static readonly Font s_titleFont = new(16.0f, bold: true);
+    private static readonly Font s_axisTitleFont = new(12.0f, bold: true);
 
     public string? Title { get; set; }
     public Axis XAxis { get; } = new();
@@ -35,7 +34,7 @@ public sealed class Figure : IDisposable
 
     public IReadOnlyList<IPlottable> Plottables => _plottables;
 
-    private SKColor GetNextPaletteColor()
+    private Rgba32 GetNextPaletteColor()
     {
         var palette = Theme.Palette;
         if (palette == null || palette.Length == 0) return Colors.Cyan;
@@ -44,7 +43,7 @@ public sealed class Figure : IDisposable
         return color;
     }
 
-    public SignalPlot PlotLine(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, string? label = null, SKColor? color = null)
+    public SignalPlot PlotLine(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new SignalPlot(x, y, style) { Label = label };
@@ -52,7 +51,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public SignalPlot PlotSignal(ReadOnlyMemory<float> y, float xStart = 0f, float xStep = 1f, string? label = null, SKColor? color = null)
+    public SignalPlot PlotSignal(ReadOnlyMemory<float> y, float xStart = 0f, float xStep = 1f, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new SignalPlot(y, xStart, xStep, style) { Label = label };
@@ -60,13 +59,13 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public SignalPlot PlotLine(float[] x, float[] y, string? label = null, SKColor? color = null)
+    public SignalPlot PlotLine(float[] x, float[] y, string? label = null, Rgba32? color = null)
         => PlotLine((ReadOnlyMemory<float>)x, (ReadOnlyMemory<float>)y, label, color);
 
-    public SignalPlot PlotSignal(float[] y, float xStart = 0f, float xStep = 1f, string? label = null, SKColor? color = null)
+    public SignalPlot PlotSignal(float[] y, float xStart = 0f, float xStep = 1f, string? label = null, Rgba32? color = null)
         => PlotSignal((ReadOnlyMemory<float>)y, xStart, xStep, label, color);
 
-    public SignalPlot PlotLine(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, SKColor? color = null)
+    public SignalPlot PlotLine(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new SignalPlot(x, y, style) { Label = label };
@@ -74,7 +73,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public SignalPlot PlotSignal(ReadOnlySpan<float> y, float xStart = 0f, float xStep = 1f, string? label = null, SKColor? color = null)
+    public SignalPlot PlotSignal(ReadOnlySpan<float> y, float xStart = 0f, float xStep = 1f, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new SignalPlot(y, xStart, xStep, style) { Label = label };
@@ -82,7 +81,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public ScatterPlot PlotScatter(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, SKColor? color = null)
+    public ScatterPlot PlotScatter(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor(), Marker = MarkerShape.Circle };
         var plot = new ScatterPlot(x, y, style) { Label = label };
@@ -90,7 +89,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public BarPlot PlotBars(ReadOnlySpan<float> positions, ReadOnlySpan<float> values, string? label = null, SKColor? color = null)
+    public BarPlot PlotBars(ReadOnlySpan<float> positions, ReadOnlySpan<float> values, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new BarPlot(positions, values, 0.8f, style) { Label = label };
@@ -98,7 +97,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public BarPlot PlotBars(ReadOnlySpan<string> categories, ReadOnlySpan<float> values, string? label = null, SKColor? color = null)
+    public BarPlot PlotBars(ReadOnlySpan<string> categories, ReadOnlySpan<float> values, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new BarPlot(categories, values, 0.8f, style) { Label = label };
@@ -106,7 +105,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public HistogramPlot PlotHistogram(ReadOnlySpan<float> values, int bins = 30, string? label = null, SKColor? color = null)
+    public HistogramPlot PlotHistogram(ReadOnlySpan<float> values, int bins = 30, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new HistogramPlot(values, bins, HistogramType.Count, style) { Label = label };
@@ -121,7 +120,7 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
-    public StreamingLinePlot PlotStream(int capacity, string? label = null, SKColor? color = null)
+    public StreamingLinePlot PlotStream(int capacity, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor() };
         var plot = new StreamingLinePlot(capacity, style) { Label = label };
@@ -162,27 +161,31 @@ public sealed class Figure : IDisposable
         return new AxisLimits(xMin, xMax, yMin, yMax);
     }
 
-    public void Render(SKCanvas canvas, int width, int height)
+    public void Render(IGraphicsCanvas canvas, int width, int height)
     {
         var dims = new PlotDimensions(width, height);
+        Render(canvas, dims);
+    }
+
+    public void Render(IGraphicsCanvas canvas, PlotDimensions dims)
+    {
         var limits = ComputeEffectiveLimits();
         var conv = new CoordinateConverter(dims, limits);
 
         // 1. Fill Figure Background
-        _bgPaint.Color = Theme.FigureBackground;
-        canvas.DrawRect(dims.FigureRect, _bgPaint);
+        canvas.Clear(Theme.FigureBackground);
 
         // 2. Fill Data Area Background
-        _dataBgPaint.Color = Theme.DataBackground;
-        canvas.DrawRect(dims.DataRect, _dataBgPaint);
+        var dataRect = new VectorPath();
+        dataRect.AddRect(dims.DataLeft, dims.DataTop, dims.DataWidth, dims.DataHeight);
+        canvas.FillPath(dataRect, new Paint(Theme.DataBackground, PaintStyle.Fill));
 
         // 3. Grid Lines & Ticks Calculation
         var xTicks = XAxis.ShowTicks ? TickGenerator.Generate(limits.XMin, limits.XMax, 8) : [];
         var yTicks = YAxis.ShowTicks ? TickGenerator.Generate(limits.YMin, limits.YMax, 6) : [];
 
-        _gridPaint.Color = Theme.MajorGridColor;
-        _axisLinePaint.Color = Theme.AxisColor;
-        _labelPaint.Color = Theme.LabelColor;
+        var gridPaint = new Paint(Theme.MajorGridColor, PaintStyle.Stroke, 1.0f);
+        var axisLinePaint = new Paint(Theme.AxisColor, PaintStyle.Stroke, 1.5f);
 
         // Draw Grids
         if (XAxis.ShowGrid)
@@ -191,7 +194,11 @@ public sealed class Figure : IDisposable
             {
                 float px = conv.GetPixelX(t.Value);
                 if (px >= dims.DataLeft && px <= dims.DataRight)
-                    canvas.DrawLine(px, dims.DataTop, px, dims.DataBottom, _gridPaint);
+                {
+                    var line = new VectorPath();
+                    line.AddLine(px, dims.DataTop, px, dims.DataBottom);
+                    canvas.DrawPath(line, gridPaint);
+                }
             }
         }
 
@@ -201,13 +208,17 @@ public sealed class Figure : IDisposable
             {
                 float py = conv.GetPixelY(t.Value);
                 if (py >= dims.DataTop && py <= dims.DataBottom)
-                    canvas.DrawLine(dims.DataLeft, py, dims.DataRight, py, _gridPaint);
+                {
+                    var line = new VectorPath();
+                    line.AddLine(dims.DataLeft, py, dims.DataRight, py);
+                    canvas.DrawPath(line, gridPaint);
+                }
             }
         }
 
         // 4. Render Plottables (clipped to data rect)
         canvas.Save();
-        canvas.ClipRect(dims.DataRect);
+        canvas.ClipPath(dataRect);
         foreach (var p in _plottables)
         {
             p.Render(canvas, conv, Theme);
@@ -215,9 +226,10 @@ public sealed class Figure : IDisposable
         canvas.Restore();
 
         // 5. Draw Axis Bounding Box
-        canvas.DrawRect(dims.DataRect, _axisLinePaint);
+        canvas.DrawPath(dataRect, axisLinePaint);
 
         // 6. Draw Tick Marks & Labels
+        var labelPaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
         if (XAxis.ShowTicks)
         {
             foreach (var t in xTicks)
@@ -225,9 +237,12 @@ public sealed class Figure : IDisposable
                 float px = conv.GetPixelX(t.Value);
                 if (px < dims.DataLeft - 1 || px > dims.DataRight + 1) continue;
 
-                canvas.DrawLine(px, dims.DataBottom, px, dims.DataBottom + 5f, _axisLinePaint);
-                float textWidth = _labelPaint.MeasureText(t.Label);
-                canvas.DrawText(t.Label, px - textWidth * 0.5f, dims.DataBottom + 18f, _labelPaint);
+                var tickLine = new VectorPath();
+                tickLine.AddLine(px, dims.DataBottom, px, dims.DataBottom + 5f);
+                canvas.DrawPath(tickLine, axisLinePaint);
+
+                float textWidth = s_labelFont.MeasureText(t.Label);
+                canvas.DrawText(t.Label, px - textWidth * 0.5f, dims.DataBottom + 18f, s_labelFont, labelPaint);
             }
         }
 
@@ -238,39 +253,39 @@ public sealed class Figure : IDisposable
                 float py = conv.GetPixelY(t.Value);
                 if (py < dims.DataTop - 1 || py > dims.DataBottom + 1) continue;
 
-                canvas.DrawLine(dims.DataLeft - 5f, py, dims.DataLeft, py, _axisLinePaint);
-                float textWidth = _labelPaint.MeasureText(t.Label);
-                canvas.DrawText(t.Label, dims.DataLeft - textWidth - 8f, py + 4f, _labelPaint);
+                var tickLine = new VectorPath();
+                tickLine.AddLine(dims.DataLeft - 5f, py, dims.DataLeft, py);
+                canvas.DrawPath(tickLine, axisLinePaint);
+
+                float textWidth = s_labelFont.MeasureText(t.Label);
+                canvas.DrawText(t.Label, dims.DataLeft - textWidth - 8f, py + 4f, s_labelFont, labelPaint);
             }
         }
 
         // 7. Axis Titles
-        _titlePaint.Color = Theme.TitleColor;
         if (!string.IsNullOrWhiteSpace(Title))
         {
-            float titleWidth = _titlePaint.MeasureText(Title);
+            var titlePaint = new Paint(Theme.TitleColor, PaintStyle.Fill);
+            float titleWidth = s_titleFont.MeasureText(Title);
             float titleX = dims.DataLeft + (dims.DataWidth - titleWidth) * 0.5f;
             float titleY = dims.MarginTop * 0.65f;
-            canvas.DrawText(Title, titleX, titleY, _titlePaint);
+            canvas.DrawText(Title, titleX, titleY, s_titleFont, titlePaint);
         }
 
-        _axisTitlePaint.Color = Theme.LabelColor;
         if (!string.IsNullOrWhiteSpace(XAxis.Label))
         {
-            float xLabelWidth = _axisTitlePaint.MeasureText(XAxis.Label);
+            var axisTitlePaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
+            float xLabelWidth = s_axisTitleFont.MeasureText(XAxis.Label);
             float xPos = dims.DataLeft + (dims.DataWidth - xLabelWidth) * 0.5f;
-            float yPos = height - 12f;
-            canvas.DrawText(XAxis.Label, xPos, yPos, _axisTitlePaint);
+            float yPos = dims.Height - 12f;
+            canvas.DrawText(XAxis.Label, xPos, yPos, s_axisTitleFont, axisTitlePaint);
         }
 
         if (!string.IsNullOrWhiteSpace(YAxis.Label))
         {
-            canvas.Save();
-            canvas.Translate(18f, dims.DataTop + dims.DataHeight * 0.5f);
-            canvas.RotateDegrees(-90);
-            float yLabelWidth = _axisTitlePaint.MeasureText(YAxis.Label);
-            canvas.DrawText(YAxis.Label, -yLabelWidth * 0.5f, 0, _axisTitlePaint);
-            canvas.Restore();
+            var axisTitlePaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
+            float yPos = dims.DataTop + dims.DataHeight * 0.5f;
+            canvas.DrawText(YAxis.Label, 12f, yPos, s_axisTitleFont, axisTitlePaint);
         }
 
         // 8. Legend
@@ -278,72 +293,64 @@ public sealed class Figure : IDisposable
         {
             LegendRenderer.Render(canvas, _plottables, dims, Theme, LegendPosition);
         }
+
+        canvas.Flush();
     }
 
-    public SKImage RenderToImage(int width = 1280, int height = 720)
+    public LinearFramebuffer RenderToFramebuffer(int width = 1280, int height = 720)
     {
-        using var surface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul));
-        Render(surface.Canvas, width, height);
-        return surface.Snapshot();
+        var fb = new LinearFramebuffer(width, height);
+        RenderToFramebuffer(fb);
+        return fb;
     }
 
-    public byte[] RenderToBytes(int width = 1280, int height = 720, SKEncodedImageFormat format = SKEncodedImageFormat.Png, int quality = 100)
+    public void RenderToFramebuffer(LinearFramebuffer fb)
     {
-        using var image = RenderToImage(width, height);
-        using var data = image.Encode(format, quality);
-        return data.ToArray();
+        using var canvas = new CpuGraphicsCanvas(fb);
+        Render(canvas, fb.Width, fb.Height);
     }
 
-    public void RenderToStream(Stream stream, int width = 1280, int height = 720, SKEncodedImageFormat format = SKEncodedImageFormat.Png, int quality = 100)
+    public byte[] RenderGlacierPng(int width = 1280, int height = 720)
     {
-        using var image = RenderToImage(width, height);
-        using var data = image.Encode(format, quality);
-        data.SaveTo(stream);
+        using var fb = RenderToFramebuffer(width, height);
+        return PngEncoder.Encode(fb);
+    }
+
+    public void RenderGlacierPng(Stream stream, int width, int height)
+    {
+        using var fb = RenderToFramebuffer(width, height);
+        PngEncoder.Encode(fb, stream);
+    }
+
+    public byte[] RenderToBytes(int width = 1280, int height = 720)
+    {
+        return RenderGlacierPng(width, height);
+    }
+
+    public void RenderToStream(Stream stream, int width = 1280, int height = 720)
+    {
+        RenderGlacierPng(stream, width, height);
     }
 
     public void SavePng(string filePath, int width = 1280, int height = 720)
     {
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using var stream = File.OpenWrite(filePath);
-        RenderToStream(stream, width, height, SKEncodedImageFormat.Png, 100);
-    }
-
-    public void SaveJpeg(string filePath, int width = 1280, int height = 720, int quality = 90)
-    {
-        var dir = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using var stream = File.OpenWrite(filePath);
-        RenderToStream(stream, width, height, SKEncodedImageFormat.Jpeg, quality);
-    }
-
-    public void SaveWebp(string filePath, int width = 1280, int height = 720, int quality = 90)
-    {
-        var dir = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using var stream = File.OpenWrite(filePath);
-        RenderToStream(stream, width, height, SKEncodedImageFormat.Webp, quality);
+        using var stream = File.Create(filePath);
+        RenderGlacierPng(stream, width, height);
     }
 
     public void SaveSvg(string filePath, int width = 1280, int height = 720)
     {
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-        using var stream = File.OpenWrite(filePath);
-        using var wstream = new SKManagedWStream(stream);
-        using var canvas = SKSvgCanvas.Create(new SKRect(0, 0, width, height), wstream);
-        Render(canvas, width, height);
+        using var svgCanvas = new SvgGraphicsCanvas(width, height);
+        Render(svgCanvas, width, height);
+        File.WriteAllText(filePath, svgCanvas.ToString());
     }
 
     public void Dispose()
     {
         Clear();
-        _bgPaint.Dispose();
-        _dataBgPaint.Dispose();
-        _gridPaint.Dispose();
-        _axisLinePaint.Dispose();
-        _labelPaint.Dispose();
-        _titlePaint.Dispose();
-        _axisTitlePaint.Dispose();
     }
 }

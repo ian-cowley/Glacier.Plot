@@ -1,8 +1,9 @@
 namespace Glacier.Plot.Plottables;
 
 using System;
+using Glacier.Graphics;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
-using SkiaSharp;
 
 /// <summary>
 /// High-speed batched scatter plot with viewport bounding box culling.
@@ -38,30 +39,18 @@ public sealed class ScatterPlot : IPlottable
         return _cachedLimits;
     }
 
-    public void Render(SKCanvas canvas, CoordinateConverter converter, PlotTheme theme)
+    public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
         if (_count == 0) return;
-
-        using var fillPaint = new SKPaint
-        {
-            Style = SKPaintStyle.Fill,
-            Color = Style.Color,
-            IsAntialias = true
-        };
-
-        using var strokePaint = new SKPaint
-        {
-            Style = SKPaintStyle.Stroke,
-            Color = Style.Color,
-            StrokeWidth = Math.Max(1.5f, Style.StrokeWidth),
-            IsAntialias = true
-        };
 
         float r = Style.MarkerSize * 0.5f;
         double xMin = converter.Limits.XMin;
         double xMax = converter.Limits.XMax;
         double yMin = converter.Limits.YMin;
         double yMax = converter.Limits.YMax;
+
+        var fillPath = new VectorPath();
+        var strokePath = new VectorPath();
 
         for (int i = 0; i < _count; i++)
         {
@@ -77,35 +66,41 @@ public sealed class ScatterPlot : IPlottable
             switch (Style.Marker)
             {
                 case MarkerShape.Circle:
-                    canvas.DrawCircle(px, py, r, fillPaint);
+                    fillPath.AddCircle(px, py, r);
                     break;
 
                 case MarkerShape.Square:
-                    canvas.DrawRect(px - r, py - r, r * 2, r * 2, fillPaint);
+                    fillPath.AddRect(px - r, py - r, r * 2, r * 2);
                     break;
 
                 case MarkerShape.Diamond:
-                    using (var diamond = new SKPath())
-                    {
-                        diamond.MoveTo(px, py - r);
-                        diamond.LineTo(px + r, py);
-                        diamond.LineTo(px, py + r);
-                        diamond.LineTo(px - r, py);
-                        diamond.Close();
-                        canvas.DrawPath(diamond, fillPaint);
-                    }
+                    fillPath.MoveTo(px, py - r);
+                    fillPath.LineTo(px + r, py);
+                    fillPath.LineTo(px, py + r);
+                    fillPath.LineTo(px - r, py);
+                    fillPath.Close();
                     break;
 
                 case MarkerShape.Cross:
-                    canvas.DrawLine(px - r, py - r, px + r, py + r, strokePaint);
-                    canvas.DrawLine(px - r, py + r, px + r, py - r, strokePaint);
+                    strokePath.AddLine(px - r, py - r, px + r, py + r);
+                    strokePath.AddLine(px - r, py + r, px + r, py - r);
                     break;
 
                 case MarkerShape.Plus:
-                    canvas.DrawLine(px - r, py, px + r, py, strokePaint);
-                    canvas.DrawLine(px, py - r, px, py + r, strokePaint);
+                    strokePath.AddLine(px - r, py, px + r, py);
+                    strokePath.AddLine(px, py - r, px, py + r);
                     break;
             }
+        }
+
+        if (fillPath.PointCount > 0)
+        {
+            canvas.FillPath(fillPath, new Paint(Style.Color, PaintStyle.Fill));
+        }
+
+        if (strokePath.PointCount > 0)
+        {
+            canvas.DrawPath(strokePath, new Paint(Style.Color, PaintStyle.Stroke, Math.Max(1.5f, Style.StrokeWidth)));
         }
     }
 }

@@ -1,10 +1,13 @@
 namespace Glacier.Plot.Decimation;
 
 using System;
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Runtime.Intrinsics.Arm;
+using Glacier.Graphics.Vector;
+using Glacier.Plot.Core;
 
 /// <summary>
 /// Hardware-accelerated Largest-Triangle-Three-Buckets (LTTB) decimation algorithm.
@@ -473,5 +476,76 @@ public static unsafe class LttbKernels
         }
 
         return targetPoints;
+    }
+
+    /// <summary>
+    /// Decimates 2D time series points using LTTB downsampling directly into a Glacier.Graphics VectorPath
+    /// using screen coordinate transformation without allocating intermediate point objects.
+    /// </summary>
+    public static int DownsampleToPath(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPoints,
+        in CoordinateConverter converter,
+        VectorPath path)
+    {
+        if (targetPoints <= 0 || xValues.Length == 0) return 0;
+        int bufSize = Math.Max(targetPoints, 32);
+        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
+        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
+        try
+        {
+            int count = Downsample(xValues, yValues, targetPoints, rentedX, rentedY);
+            if (count > 0)
+            {
+                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
+                for (int i = 1; i < count; i++)
+                {
+                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
+                }
+            }
+            return count;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedX);
+            ArrayPool<float>.Shared.Return(rentedY);
+        }
+    }
+
+    /// <summary>
+    /// Decimates uniformly spaced 1D signal points using LTTB downsampling directly into a Glacier.Graphics VectorPath
+    /// using screen coordinate transformation without allocating intermediate point objects.
+    /// </summary>
+    public static int DownsampleUniformToPath(
+        ReadOnlySpan<float> yValues,
+        float xStart,
+        float xStep,
+        int targetPoints,
+        in CoordinateConverter converter,
+        VectorPath path)
+    {
+        if (targetPoints <= 0 || yValues.Length == 0) return 0;
+        int bufSize = Math.Max(targetPoints, 32);
+        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
+        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
+        try
+        {
+            int count = DownsampleUniform(yValues, xStart, xStep, targetPoints, rentedX, rentedY);
+            if (count > 0)
+            {
+                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
+                for (int i = 1; i < count; i++)
+                {
+                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
+                }
+            }
+            return count;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedX);
+            ArrayPool<float>.Shared.Return(rentedY);
+        }
     }
 }

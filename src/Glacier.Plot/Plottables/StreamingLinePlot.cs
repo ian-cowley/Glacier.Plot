@@ -3,9 +3,10 @@ namespace Glacier.Plot.Plottables;
 using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
+using Glacier.Graphics;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 using Glacier.Plot.Decimation;
-using SkiaSharp;
 
 /// <summary>
 /// Unmanaged circular ring buffer line plot engineered for zero-allocation 60/120 FPS real-time streaming feeds.
@@ -86,7 +87,7 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
         return new AxisLimits(startX, endX, min, max);
     }
 
-    public void Render(SKCanvas canvas, CoordinateConverter converter, PlotTheme theme)
+    public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
         if (_count < 2) return;
 
@@ -104,63 +105,33 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
             double startX = Math.Max(0, _totalPushed - _count);
             int targetPixels = Math.Max(100, (int)Math.Ceiling(converter.Dimensions.DataWidth));
 
-            float[]? rentedOutX = null;
-            float[]? rentedOutY = null;
-            ReadOnlySpan<float> renderX;
-            ReadOnlySpan<float> renderY;
-            int renderCount;
+            var path = new VectorPath();
 
             if (Decimation != DecimationStrategy.None && _count > targetPixels * 2)
             {
-                rentedOutX = ArrayPool<float>.Shared.Rent(targetPixels * 2);
-                rentedOutY = ArrayPool<float>.Shared.Rent(targetPixels * 2);
-
-                renderCount = LttbKernels.DownsampleUniform(
+                LttbKernels.DownsampleUniformToPath(
                     rentedLinear.AsSpan(0, _count),
                     (float)startX,
                     1.0f,
                     targetPixels,
-                    rentedOutX,
-                    rentedOutY);
-
-                renderX = rentedOutX.AsSpan(0, renderCount);
-                renderY = rentedOutY.AsSpan(0, renderCount);
+                    converter,
+                    path);
             }
             else
             {
-                renderCount = _count;
-                rentedOutX = ArrayPool<float>.Shared.Rent(_count);
-                for (int i = 0; i < _count; i++) rentedOutX[i] = (float)(startX + i);
-                renderX = rentedOutX.AsSpan(0, _count);
-                renderY = rentedLinear.AsSpan(0, _count);
-            }
-
-            try
-            {
-                using var path = new SKPath();
-                path.MoveTo(converter.GetPixelX(renderX[0]), converter.GetPixelY(renderY[0]));
-                for (int i = 1; i < renderCount; i++)
+                path.MoveTo(converter.GetPixelX(startX), converter.GetPixelY(rentedLinear[0]));
+                for (int i = 1; i < _count; i++)
                 {
-                    path.LineTo(converter.GetPixelX(renderX[i]), converter.GetPixelY(renderY[i]));
+                    path.LineTo(converter.GetPixelX(startX + i), converter.GetPixelY(rentedLinear[i]));
                 }
-
-                using var strokePaint = new SKPaint
-                {
-                    Style = SKPaintStyle.Stroke,
-                    Color = Style.Color,
-                    StrokeWidth = Style.StrokeWidth,
-                    IsAntialias = true,
-                    StrokeCap = SKStrokeCap.Round,
-                    StrokeJoin = SKStrokeJoin.Round
-                };
-
-                canvas.DrawPath(path, strokePaint);
             }
-            finally
-            {
-                if (rentedOutX != null) ArrayPool<float>.Shared.Return(rentedOutX);
-                if (rentedOutY != null) ArrayPool<float>.Shared.Return(rentedOutY);
-            }
+
+            canvas.DrawPath(path, new Paint(
+                Style.Color,
+                PaintStyle.Stroke,
+                Style.StrokeWidth,
+                StrokeJoin.Round,
+                StrokeCap.Round));
         }
         finally
         {

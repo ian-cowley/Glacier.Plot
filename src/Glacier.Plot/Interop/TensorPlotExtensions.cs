@@ -1,23 +1,23 @@
 namespace Glacier.Plot.Interop;
 
 using System;
+using Glacier.Graphics;
 using Glacier.Plot.Core;
 using Glacier.Plot.Figures;
 using Glacier.Plot.Plottables;
 using Glacier.Tensor.Core;
-using SkiaSharp;
 
 /// <summary>
 /// Plotting extensions for Glacier.Tensor N-dimensional strided tensors.
 /// </summary>
 public static class TensorPlotExtensions
 {
-    public static SignalPlot PlotLine(this Figure fig, Tensor<float> tensor, string? label = null, SKColor? color = null)
+    public static SignalPlot PlotLine(this Figure fig, Tensor<float> tensor, string? label = null, Rgba32? color = null)
     {
         return fig.PlotSignal(tensor.AsSpan(), 0f, 1f, label, color);
     }
 
-    public static HistogramPlot PlotHistogram(this Figure fig, Tensor<float> tensor, int bins = 30, string? label = null, SKColor? color = null)
+    public static HistogramPlot PlotHistogram(this Figure fig, Tensor<float> tensor, int bins = 30, string? label = null, Rgba32? color = null)
     {
         return fig.PlotHistogram(tensor.AsSpan(), bins, label, color);
     }

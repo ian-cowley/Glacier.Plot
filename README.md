@@ -23,7 +23,7 @@
 3. **Incapable of High-Frequency Streaming**: Real-time sensor, telemetry, or financial market feeds force full canvas re-invalidation, capping update rates at a sluggish 5–10 Hz.
 
 **Glacier.Plot** redefines 2D data visualization with:
-- **GPU-Accelerated Rasterization & Compute Kernels**: Multi-backend rendering engine powered by SkiaSharp, Vulkan, and Direct2D, paired with direct driver P/Invoke bare-metal GPU decimation (`nvcuda.dll` and `amdhip64.dll`).
+- **Pure Managed C# / GPU-Accelerated Rasterization & Compute Kernels**: Multi-backend rendering engine powered by pure C# `Glacier.Graphics`, paired with direct driver P/Invoke bare-metal GPU decimation (`nvcuda.dll` and `amdhip64.dll`).
 - **10.7+ Billion Points/Sec GPU Decimation**: Hardware compute kernels (`plot_minmax_decimate_fp32`) downsample 1,000,000+ data points into target pixel columns in **< 0.1 ms** (10,795 M pts/s).
 - **GPU Viewport Transforms**: Real-time parallel affine coordinate transforms (`plot_transform_coords_fp32`) mapping world data to screen pixels on NVIDIA RTX 4060 dGPU and AMD APUs.
 - **Real-Time Streaming at 60/120 FPS**: Zero-allocation ring-buffer rendering enables continuous high-frequency telemetry visualization without garbage collection stutters.
@@ -33,7 +33,7 @@
 
 ## 🖼️ Visual Gallery: Real Rendered Plots & High-Frequency Streaming
 
-All figures below are generated directly from the included `Glacier.Plot.Demo` sample using AVX-512 SIMD / GPU acceleration, zero-copy `Glacier.Polaris` integration, and SkiaSharp rasterization:
+All figures below are generated directly from the included `Glacier.Plot.Demo` sample using AVX-512 SIMD / GPU acceleration, zero-copy `Glacier.Polaris` integration, and `Glacier.Graphics` rasterization:
 
 | 10,000,000-Point Signal (SIMD LTTB Decimated) | Glacier.Polaris Zero-Copy Financial Chart |
 | :---: | :---: |
@@ -43,7 +43,7 @@ All figures below are generated directly from the included `Glacier.Plot.Demo` s
 | Glacier.Tensor 2D Weight Heatmap (Plasma) | Zero-Allocation 500+ FPS Streaming Simulation |
 | :---: | :---: |
 | ![Tensor Colormap Heatmap](docs/images/demo_tensor_heatmap.png) | ![Real-time Streaming Sensor](docs/images/demo_streaming_last_frame.png) |
-| *2D deep learning attention matrix mapped directly via Skia colormap shading* | *Ring-buffer telemetry streaming running at >500 FPS with zero GC allocations* |
+| *2D deep learning attention matrix mapped directly via colormap shading* | *Ring-buffer telemetry streaming running at >500 FPS with zero GC allocations* |
 
 ---
 
@@ -66,8 +66,9 @@ All figures below are generated directly from the included `Glacier.Plot.Demo` s
                    │ Screen-Space Coordinates
                    ▼
 ┌──────────────────────────────────────┐
-│ GPU Rasterizer (SkiaSharp / Vulkan)  │
-│ Hardware batched vertex buffers      │
+│ Vector & Raster Engine               │
+│ (Glacier.Graphics / LinearFramebuffer│
+│  & Hardware Batched VectorPaths)     │
 └──────────────────┬───────────────────┘
                    │ 60 / 120 FPS Display
                    ▼

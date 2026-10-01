@@ -175,8 +175,8 @@ public static class Program
                 streamPlot.Append(val);
             }
 
-            // Render to memory image
-            using var img = fig4.RenderToImage(800, 450);
+            // Render to memory framebuffer
+            using var fb = fig4.RenderToFramebuffer(800, 450);
         }
         sw.Stop();
 

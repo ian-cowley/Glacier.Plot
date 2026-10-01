@@ -1,7 +1,12 @@
 namespace Glacier.Plot.Tests;
 
+using System;
 using System.IO;
+using Glacier.Graphics;
+using Glacier.Graphics.Raster;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
+using Glacier.Plot.Decimation;
 using Glacier.Plot.Figures;
 using Glacier.Plot.Plottables;
 using Xunit;
@@ -164,6 +169,80 @@ public class FigureRenderingTests
         Assert.Equal(0x50, png[1]);
         Assert.Equal(0x4E, png[2]);
         Assert.Equal(0x47, png[3]);
+    }
+
+    [Fact]
+    public void Figure_RendersToFramebuffer_AndPng_ZeroSkiaSharpAssembliesLoaded()
+    {
+        using var fig = new Figure { Title = "Pure C# Render Test" };
+        fig.XAxis.Label = "Sample X";
+        fig.YAxis.Label = "Sample Y";
+
+        float[] x = [0f, 1f, 2f, 3f, 4f, 5f];
+        float[] y = [5f, 15f, 25f, 12f, 45f, 30f];
+        fig.PlotLine(x, y, "Line", Colors.Cyan);
+        fig.PlotScatter(x, y, "Points", Colors.Amber);
+        fig.PlotBars([0f, 1f, 2f], [10f, 20f, 15f], "Bars", Colors.Emerald);
+
+        // 1. Render directly to LinearFramebuffer
+        using var fb = fig.RenderToFramebuffer(640, 480);
+        Assert.NotNull(fb);
+        Assert.Equal(640, fb.Width);
+        Assert.Equal(480, fb.Height);
+        Assert.False(fb.AsByteSpan().IsEmpty);
+
+        // 2. Render to PNG stream
+        using var ms = new MemoryStream();
+        fig.RenderGlacierPng(ms, 640, 480);
+        byte[] png = ms.ToArray();
+        Assert.True(png.Length > 64);
+        Assert.Equal(0x89, png[0]);
+        Assert.Equal(0x50, png[1]);
+        Assert.Equal(0x4E, png[2]);
+        Assert.Equal(0x47, png[3]);
+
+        // 3. Verify zero SkiaSharp assemblies loaded in process
+        var loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+        foreach (var asm in loadedAssemblies)
+        {
+            string name = asm.GetName().Name ?? "";
+            Assert.DoesNotContain("SkiaSharp", name, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void SignalPlot_SimdDecimation_WiresDirectlyToVectorPath()
+    {
+        int n = 10_000;
+        float[] x = new float[n];
+        float[] y = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            x[i] = i;
+            y[i] = MathF.Sin(i * 0.05f) * 10f;
+        }
+
+        var dims = new PlotDimensions(800, 600);
+        var limits = new AxisLimits(0, n, -15, 15);
+        var conv = new CoordinateConverter(dims, limits);
+
+        // Test LTTB directly to VectorPath
+        var lttbPath = new VectorPath();
+        int lttbCount = LttbKernels.DownsampleToPath(x, y, 400, conv, lttbPath);
+        Assert.Equal(400, lttbCount);
+        Assert.True(lttbPath.PointCount >= 400);
+
+        // Test MinMax directly to VectorPath
+        var minMaxPath = new VectorPath();
+        int mmCount = MinMaxKernels.DownsampleToPath(x, y, 400, conv, minMaxPath);
+        Assert.True(mmCount > 0);
+        Assert.True(minMaxPath.PointCount > 0);
+
+        // Test uniform LTTB to VectorPath
+        var uniformPath = new VectorPath();
+        int uniformCount = LttbKernels.DownsampleUniformToPath(y, 0f, 1f, 400, conv, uniformPath);
+        Assert.Equal(400, uniformCount);
+        Assert.True(uniformPath.PointCount >= 400);
     }
 }
 

@@ -1,8 +1,9 @@
 namespace Glacier.Plot.Plottables;
 
 using System;
+using Glacier.Graphics;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
-using SkiaSharp;
 
 public enum HistogramType
 {
@@ -94,22 +95,10 @@ public sealed class HistogramPlot : IPlottable
         return new AxisLimits(_dataMin, _dataMax, 0, maxCount).WithPadding(0.05, 0.1);
     }
 
-    public void Render(SKCanvas canvas, CoordinateConverter converter, PlotTheme theme)
+    public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
-        using var fillPaint = new SKPaint
-        {
-            Style = SKPaintStyle.Fill,
-            Color = Style.Color.WithAlpha(Style.FillAlpha),
-            IsAntialias = true
-        };
-
-        using var strokePaint = new SKPaint
-        {
-            Style = SKPaintStyle.Stroke,
-            Color = Style.Color,
-            StrokeWidth = 1.0f,
-            IsAntialias = true
-        };
+        var fillPaint = new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill);
+        var strokePaint = new Paint(Style.Color, PaintStyle.Stroke, 1.0f);
 
         float baselinePy = converter.GetPixelY(0.0);
 
@@ -126,9 +115,10 @@ public sealed class HistogramPlot : IPlottable
             float top = Math.Min(py, baselinePy);
             float bottom = Math.Max(py, baselinePy);
 
-            var rect = new SKRect(px0, top, px1, bottom);
-            canvas.DrawRect(rect, fillPaint);
-            canvas.DrawRect(rect, strokePaint);
+            var rectPath = new VectorPath();
+            rectPath.AddRect(px0, top, px1 - px0, bottom - top);
+            canvas.FillPath(rectPath, fillPaint);
+            canvas.DrawPath(rectPath, strokePaint);
         }
     }
 }

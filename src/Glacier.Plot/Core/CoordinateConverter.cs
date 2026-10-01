@@ -1,7 +1,8 @@
 namespace Glacier.Plot.Core;
 
+using System;
 using System.Runtime.CompilerServices;
-using SkiaSharp;
+using Glacier.Graphics;
 
 /// <summary>
 /// Fast zero-allocation coordinate transformer between data space and screen pixel space.
@@ -33,7 +34,7 @@ public readonly struct CoordinateConverter
     public float GetPixelY(double y) => (float)(Dimensions.DataBottom - (y - Limits.YMin) * PxPerUnitY);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public SKPoint GetPixel(double x, double y) => new(GetPixelX(x), GetPixelY(y));
+    public PointF GetPixel(double x, double y) => new(GetPixelX(x), GetPixelY(y));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double GetDataX(float px) => Limits.XMin + (px - Dimensions.DataLeft) / PxPerUnitX;

@@ -1,6 +1,7 @@
 namespace Glacier.Plot.Core;
 
-using SkiaSharp;
+using System;
+using Glacier.Graphics;
 
 /// <summary>
 /// Dimensions and layout geometry for the rendered figure.
@@ -22,6 +23,6 @@ public readonly record struct PlotDimensions(
     public float DataTop => MarginTop;
     public float DataBottom => Height - MarginBottom;
 
-    public SKRect DataRect => new(DataLeft, DataTop, DataRight, DataBottom);
-    public SKRect FigureRect => new(0, 0, Width, Height);
+    public RectF DataRect => RectF.FromLTRB(DataLeft, DataTop, DataRight, DataBottom);
+    public RectF FigureRect => new(0, 0, Width, Height);
 }

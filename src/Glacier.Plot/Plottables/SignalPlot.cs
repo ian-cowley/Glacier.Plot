@@ -1,14 +1,14 @@
 namespace Glacier.Plot.Plottables;
 
 using System;
-using System.Buffers;
+using Glacier.Graphics;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 using Glacier.Plot.Decimation;
-using SkiaSharp;
 
 /// <summary>
 /// Ultra-high-speed continuous line plot designed for datasets from tens of points to tens of millions of points.
-/// Automatically applies SIMD LTTB / MinMax downsampling when points exceed screen resolution.
+/// Automatically applies SIMD LTTB / MinMax downsampling directly to VectorPath without intermediate point allocations.
 /// </summary>
 public sealed class SignalPlot : IPlottable, IDisposable
 {
@@ -20,18 +20,10 @@ public sealed class SignalPlot : IPlottable, IDisposable
     private readonly float _xStep;
     private AxisLimits _cachedLimits = AxisLimits.Empty;
 
-    // Reusable SKPath and SKPaint fields
-    private readonly SKPath _path = new();
-    private readonly SKPath _fillPath = new();
-    private readonly SKPaint _fillPaint = new() { Style = SKPaintStyle.Fill, IsAntialias = true };
-    private readonly SKPaint _strokePaint = new()
-    {
-        Style = SKPaintStyle.Stroke,
-        IsAntialias = true,
-        StrokeCap = SKStrokeCap.Round,
-        StrokeJoin = SKStrokeJoin.Round
-    };
-    private readonly SKPaint _markerPaint = new() { Style = SKPaintStyle.Fill, IsAntialias = true };
+    // Reusable VectorPath instances
+    private readonly VectorPath _path = new();
+    private readonly VectorPath _fillPath = new();
+    private readonly VectorPath _markerPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new();
@@ -120,134 +112,115 @@ public sealed class SignalPlot : IPlottable, IDisposable
         return _cachedLimits;
     }
 
-    public void Render(SKCanvas canvas, CoordinateConverter converter, PlotTheme theme)
+    public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
         if (_count < 2) return;
 
         int targetPixels = Math.Max(100, (int)Math.Ceiling(converter.Dimensions.DataWidth));
         bool shouldDecimate = Decimation != DecimationStrategy.None && _count > targetPixels * 2;
 
-        float[]? rentedX = null;
-        float[]? rentedY = null;
-
-        ReadOnlySpan<float> renderX;
-        ReadOnlySpan<float> renderY;
-        int renderCount;
+        _path.Clear();
 
         if (shouldDecimate)
         {
-            int bufferSize = Math.Max(targetPixels * 2, 2048);
-            rentedX = ArrayPool<float>.Shared.Rent(bufferSize);
-            rentedY = ArrayPool<float>.Shared.Rent(bufferSize);
-
             bool useMinMax = Decimation == DecimationStrategy.MinMax ||
                              (Decimation == DecimationStrategy.Auto && _count > targetPixels * 50);
 
             if (useMinMax)
             {
-                renderCount = _isUniform
-                    ? MinMaxKernels.DownsampleUniform(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, rentedX, rentedY)
-                    : MinMaxKernels.Downsample(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, rentedX, rentedY);
+                if (_isUniform)
+                    MinMaxKernels.DownsampleUniformToPath(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, converter, _path);
+                else
+                    MinMaxKernels.DownsampleToPath(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, converter, _path);
             }
             else
             {
-                renderCount = _isUniform
-                    ? LttbKernels.DownsampleUniform(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, rentedX, rentedY)
-                    : LttbKernels.Downsample(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, rentedX, rentedY);
+                if (_isUniform)
+                    LttbKernels.DownsampleUniformToPath(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, converter, _path);
+                else
+                    LttbKernels.DownsampleToPath(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, converter, _path);
             }
-
-            renderX = rentedX.AsSpan(0, renderCount);
-            renderY = rentedY.AsSpan(0, renderCount);
         }
         else
         {
-            renderCount = _count;
+            var ySpan = _yMemory.Span;
             if (_isUniform)
             {
-                rentedX = ArrayPool<float>.Shared.Rent(_count);
-                for (int i = 0; i < _count; i++) rentedX[i] = _xStart + i * _xStep;
-                renderX = rentedX.AsSpan(0, _count);
-            }
-            else
-            {
-                renderX = _xMemory.Span[.._count];
-            }
-            renderY = _yMemory.Span[.._count];
-        }
-
-        try
-        {
-            _path.Rewind();
-            float firstPx = converter.GetPixelX(renderX[0]);
-            float firstPy = converter.GetPixelY(renderY[0]);
-            _path.MoveTo(firstPx, firstPy);
-
-            for (int i = 1; i < renderCount; i++)
-            {
-                float px = converter.GetPixelX(renderX[i]);
-                float py = converter.GetPixelY(renderY[i]);
-                _path.LineTo(px, py);
-            }
-
-            // Fill under curve if enabled
-            if (Style.IsFilled)
-            {
-                _fillPath.Rewind();
-                _fillPath.AddPath(_path);
-                float lastPx = converter.GetPixelX(renderX[renderCount - 1]);
-                float baselinePy = converter.GetPixelY(Math.Max(0, converter.Limits.YMin));
-                _fillPath.LineTo(lastPx, baselinePy);
-                _fillPath.LineTo(firstPx, baselinePy);
-                _fillPath.Close();
-
-                _fillPaint.Color = Style.Color.WithAlpha(Style.FillAlpha);
-                canvas.DrawPath(_fillPath, _fillPaint);
-            }
-
-            // Stroke line
-            _strokePaint.Color = Style.Color;
-            _strokePaint.StrokeWidth = Style.StrokeWidth;
-
-            if (Style.Pattern == LinePattern.Dashed)
-                _strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 6f], 0f);
-            else if (Style.Pattern == LinePattern.Dotted)
-                _strokePaint.PathEffect = SKPathEffect.CreateDash([2f, 4f], 0f);
-            else if (Style.Pattern == LinePattern.DashDot)
-                _strokePaint.PathEffect = SKPathEffect.CreateDash([10f, 4f, 2f, 4f], 0f);
-            else
-                _strokePaint.PathEffect = null;
-
-            canvas.DrawPath(_path, _strokePaint);
-
-            // Optional markers
-            if (Style.Marker != MarkerShape.None && renderCount <= 500)
-            {
-                _markerPaint.Color = Style.Color;
-                float r = Style.MarkerSize * 0.5f;
-                for (int i = 0; i < renderCount; i++)
+                _path.MoveTo(converter.GetPixelX(_xStart), converter.GetPixelY(ySpan[0]));
+                for (int i = 1; i < _count; i++)
                 {
-                    float px = converter.GetPixelX(renderX[i]);
-                    float py = converter.GetPixelY(renderY[i]);
-                    if (Style.Marker == MarkerShape.Circle)
-                        canvas.DrawCircle(px, py, r, _markerPaint);
-                    else if (Style.Marker == MarkerShape.Square)
-                        canvas.DrawRect(px - r, py - r, r * 2, r * 2, _markerPaint);
+                    _path.LineTo(converter.GetPixelX(_xStart + i * _xStep), converter.GetPixelY(ySpan[i]));
+                }
+            }
+            else
+            {
+                var xSpan = _xMemory.Span;
+                _path.MoveTo(converter.GetPixelX(xSpan[0]), converter.GetPixelY(ySpan[0]));
+                for (int i = 1; i < _count; i++)
+                {
+                    _path.LineTo(converter.GetPixelX(xSpan[i]), converter.GetPixelY(ySpan[i]));
                 }
             }
         }
-        finally
+
+        // Fill under curve if enabled
+        if (Style.IsFilled && _path.PointCount >= 2)
         {
-            if (rentedX != null) ArrayPool<float>.Shared.Return(rentedX);
-            if (rentedY != null) ArrayPool<float>.Shared.Return(rentedY);
+            _fillPath.Clear();
+            _fillPath.AddPath(_path);
+
+            float lastX = _isUniform ? _xStart + (_count - 1) * _xStep : _xMemory.Span[_count - 1];
+            float firstX = _isUniform ? _xStart : _xMemory.Span[0];
+
+            float lastPx = converter.GetPixelX(lastX);
+            float firstPx = converter.GetPixelX(firstX);
+            float baselinePy = converter.GetPixelY(Math.Max(0, converter.Limits.YMin));
+
+            _fillPath.LineTo(lastPx, baselinePy);
+            _fillPath.LineTo(firstPx, baselinePy);
+            _fillPath.Close();
+
+            canvas.FillPath(_fillPath, new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill));
+        }
+
+        // Stroke line
+        canvas.DrawPath(_path, new Paint(
+            Style.Color,
+            PaintStyle.Stroke,
+            Style.StrokeWidth,
+            StrokeJoin.Round,
+            StrokeCap.Round));
+
+        // Optional markers (for small point sets)
+        if (Style.Marker != MarkerShape.None && _count <= 500)
+        {
+            _markerPath.Clear();
+            float r = Style.MarkerSize * 0.5f;
+            var ySpan = _yMemory.Span;
+
+            for (int i = 0; i < _count; i++)
+            {
+                float xVal = _isUniform ? _xStart + i * _xStep : _xMemory.Span[i];
+                float px = converter.GetPixelX(xVal);
+                float py = converter.GetPixelY(ySpan[i]);
+
+                if (Style.Marker == MarkerShape.Circle)
+                    _markerPath.AddCircle(px, py, r);
+                else if (Style.Marker == MarkerShape.Square)
+                    _markerPath.AddRect(px - r, py - r, r * 2, r * 2);
+            }
+
+            if (_markerPath.PointCount > 0)
+            {
+                canvas.FillPath(_markerPath, new Paint(Style.Color, PaintStyle.Fill));
+            }
         }
     }
 
     public void Dispose()
     {
-        _path.Dispose();
-        _fillPath.Dispose();
-        _fillPaint.Dispose();
-        _strokePaint.Dispose();
-        _markerPaint.Dispose();
+        _path.Clear();
+        _fillPath.Clear();
+        _markerPath.Clear();
     }
 }

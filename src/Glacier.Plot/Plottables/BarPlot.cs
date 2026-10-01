@@ -1,8 +1,9 @@
 namespace Glacier.Plot.Plottables;
 
 using System;
+using Glacier.Graphics;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
-using SkiaSharp;
 
 /// <summary>
 /// Bar chart plottable supporting numeric positions or categorical series.
@@ -62,24 +63,12 @@ public sealed class BarPlot : IPlottable
         return new AxisLimits(minX, maxX, minY, maxY).WithPadding(0.05, 0.1);
     }
 
-    public void Render(SKCanvas canvas, CoordinateConverter converter, PlotTheme theme)
+    public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
         if (_values.Length == 0) return;
 
-        using var fillPaint = new SKPaint
-        {
-            Style = SKPaintStyle.Fill,
-            Color = Style.Color,
-            IsAntialias = true
-        };
-
-        using var strokePaint = new SKPaint
-        {
-            Style = SKPaintStyle.Stroke,
-            Color = Style.Color.WithAlpha(200),
-            StrokeWidth = 1.0f,
-            IsAntialias = true
-        };
+        var fillPaint = new Paint(Style.Color, PaintStyle.Fill);
+        var strokePaint = new Paint(Style.Color.WithAlpha(200), PaintStyle.Stroke, 1.0f);
 
         float halfWidth = _barWidth * 0.5f;
         float baselinePy = converter.GetPixelY(Baseline);
@@ -96,9 +85,10 @@ public sealed class BarPlot : IPlottable
             float top = Math.Min(pyVal, baselinePy);
             float bottom = Math.Max(pyVal, baselinePy);
 
-            var rect = new SKRect(pxLeft, top, pxRight, bottom);
-            canvas.DrawRect(rect, fillPaint);
-            canvas.DrawRect(rect, strokePaint);
+            var rectPath = new VectorPath();
+            rectPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
+            canvas.FillPath(rectPath, fillPaint);
+            canvas.DrawPath(rectPath, strokePaint);
         }
     }
 }

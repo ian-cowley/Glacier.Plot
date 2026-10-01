@@ -1,6 +1,6 @@
 namespace Glacier.Plot.Core;
 
-using SkiaSharp;
+using Glacier.Graphics;
 
 public enum LinePattern
 {
@@ -25,7 +25,7 @@ public enum MarkerShape
 /// </summary>
 public sealed class PlotStyle
 {
-    public SKColor Color { get; set; } = Colors.Cyan;
+    public Rgba32 Color { get; set; } = Colors.Cyan;
     public float StrokeWidth { get; set; } = 2.0f;
     public LinePattern Pattern { get; set; } = LinePattern.Solid;
     public MarkerShape Marker { get; set; } = MarkerShape.None;

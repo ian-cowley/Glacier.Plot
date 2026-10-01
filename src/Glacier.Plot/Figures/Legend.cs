@@ -1,9 +1,11 @@
 namespace Glacier.Plot.Figures;
 
 using System.Collections.Generic;
+using Glacier.Graphics;
+using Glacier.Graphics.Text;
+using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 using Glacier.Plot.Plottables;
-using SkiaSharp;
 
 public enum LegendLocation
 {
@@ -18,8 +20,10 @@ public enum LegendLocation
 /// </summary>
 public static class LegendRenderer
 {
+    private static readonly Font s_legendFont = new(12.0f);
+
     public static void Render(
-        SKCanvas canvas,
+        IGraphicsCanvas canvas,
         IReadOnlyList<IPlottable> plottables,
         PlotDimensions dimensions,
         PlotTheme theme,
@@ -33,14 +37,6 @@ public static class LegendRenderer
 
         if (items.Count == 0) return;
 
-        using var textPaint = new SKPaint
-        {
-            Color = theme.LegendText,
-            TextSize = 12.0f,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial")
-        };
-
         float itemHeight = 20.0f;
         float padding = 8.0f;
         float swatchWidth = 24.0f;
@@ -48,7 +44,7 @@ public static class LegendRenderer
 
         foreach (var item in items)
         {
-            float w = textPaint.MeasureText(item.Label);
+            float w = s_legendFont.MeasureText(item.Label);
             if (w > maxTextWidth) maxTextWidth = w;
         }
 
@@ -67,14 +63,13 @@ public static class LegendRenderer
             _ => dimensions.DataTop + 12f
         };
 
-        var boxRect = new SKRect(boxX, boxY, boxX + boxWidth, boxY + boxHeight);
-
         // Draw background box
-        using var bgPaint = new SKPaint { Style = SKPaintStyle.Fill, Color = theme.LegendBackground, IsAntialias = true };
-        using var borderPaint = new SKPaint { Style = SKPaintStyle.Stroke, Color = theme.LegendBorder, StrokeWidth = 1f, IsAntialias = true };
+        var boxPath = new VectorPath();
+        boxPath.AddRect(boxX, boxY, boxWidth, boxHeight);
+        canvas.FillPath(boxPath, new Paint(theme.LegendBackground, PaintStyle.Fill));
+        canvas.DrawPath(boxPath, new Paint(theme.LegendBorder, PaintStyle.Stroke, 1.0f));
 
-        canvas.DrawRoundRect(boxRect, 4f, 4f, bgPaint);
-        canvas.DrawRoundRect(boxRect, 4f, 4f, borderPaint);
+        var textPaint = new Paint(theme.LegendText, PaintStyle.Fill);
 
         // Draw swatches and labels
         for (int i = 0; i < items.Count; i++)
@@ -85,25 +80,20 @@ public static class LegendRenderer
             float swatchX1 = boxX + padding;
             float swatchX2 = swatchX1 + swatchWidth;
 
-            using var swatchPaint = new SKPaint
-            {
-                Style = SKPaintStyle.Stroke,
-                Color = item.Style.Color,
-                StrokeWidth = item.Style.StrokeWidth,
-                IsAntialias = true
-            };
-
-            canvas.DrawLine(swatchX1, itemY, swatchX2, itemY, swatchPaint);
+            var swatchPath = new VectorPath();
+            swatchPath.AddLine(swatchX1, itemY, swatchX2, itemY);
+            canvas.DrawPath(swatchPath, new Paint(item.Style.Color, PaintStyle.Stroke, item.Style.StrokeWidth));
 
             if (item.Style.Marker != MarkerShape.None)
             {
-                using var mPaint = new SKPaint { Style = SKPaintStyle.Fill, Color = item.Style.Color, IsAntialias = true };
-                canvas.DrawCircle((swatchX1 + swatchX2) * 0.5f, itemY, 3.5f, mPaint);
+                var markerPath = new VectorPath();
+                markerPath.AddCircle((swatchX1 + swatchX2) * 0.5f, itemY, 3.5f);
+                canvas.FillPath(markerPath, new Paint(item.Style.Color, PaintStyle.Fill));
             }
 
             float textX = swatchX2 + padding;
             float textY = itemY + 4.0f; // vertical text baseline adjustment
-            canvas.DrawText(item.Label, textX, textY, textPaint);
+            canvas.DrawText(item.Label, textX, textY, s_legendFont, textPaint);
         }
     }
 }

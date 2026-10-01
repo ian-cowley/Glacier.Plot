@@ -1,9 +1,12 @@
 namespace Glacier.Plot.Decimation;
 
 using System;
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using Glacier.Graphics.Vector;
+using Glacier.Plot.Core;
 
 /// <summary>
 /// High-speed Min-Max decimation kernel.
@@ -184,5 +187,76 @@ public static unsafe class MinMaxKernels
         }
 
         return outIndex;
+    }
+
+    /// <summary>
+    /// Decimates 2D time series points using Min-Max downsampling directly into a Glacier.Graphics VectorPath
+    /// using screen coordinate transformation without allocating intermediate point objects.
+    /// </summary>
+    public static int DownsampleToPath(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath path)
+    {
+        if (targetPixelWidth <= 0 || xValues.Length == 0) return 0;
+        int bufSize = Math.Max(targetPixelWidth * 2, 32);
+        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
+        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
+        try
+        {
+            int count = Downsample(xValues, yValues, targetPixelWidth, rentedX, rentedY);
+            if (count > 0)
+            {
+                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
+                for (int i = 1; i < count; i++)
+                {
+                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
+                }
+            }
+            return count;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedX);
+            ArrayPool<float>.Shared.Return(rentedY);
+        }
+    }
+
+    /// <summary>
+    /// Decimates uniformly spaced 1D signal points using Min-Max downsampling directly into a Glacier.Graphics VectorPath
+    /// using screen coordinate transformation without allocating intermediate point objects.
+    /// </summary>
+    public static int DownsampleUniformToPath(
+        ReadOnlySpan<float> yValues,
+        float xStart,
+        float xStep,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath path)
+    {
+        if (targetPixelWidth <= 0 || yValues.Length == 0) return 0;
+        int bufSize = Math.Max(targetPixelWidth * 2, 32);
+        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
+        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
+        try
+        {
+            int count = DownsampleUniform(yValues, xStart, xStep, targetPixelWidth, rentedX, rentedY);
+            if (count > 0)
+            {
+                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
+                for (int i = 1; i < count; i++)
+                {
+                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
+                }
+            }
+            return count;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(rentedX);
+            ArrayPool<float>.Shared.Return(rentedY);
+        }
     }
 }

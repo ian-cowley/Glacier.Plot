@@ -1,12 +1,12 @@
 namespace Glacier.Plot.Interop;
 
 using System;
+using Glacier.Graphics;
 using Glacier.Plot.Core;
 using Glacier.Plot.Figures;
 using Glacier.Plot.Plottables;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
-using SkiaSharp;
 
 /// <summary>
 /// Zero-copy plotting extensions for Glacier.Polaris DataFrames and Series.
@@ -57,21 +57,21 @@ public static class PolarisPlotExtensions
         return ToFloatArray(series);
     }
 
-    public static SignalPlot PlotLine(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, SKColor? color = null)
+    public static SignalPlot PlotLine(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, Rgba32? color = null)
     {
         var x = xSeries.AsFloatMemory();
         var y = ySeries.AsFloatMemory();
         return fig.PlotLine(x, y, label ?? ySeries.Name, color);
     }
 
-    public static ScatterPlot PlotScatter(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, SKColor? color = null)
+    public static ScatterPlot PlotScatter(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, Rgba32? color = null)
     {
         float[] x = xSeries.ToFloatArray();
         float[] y = ySeries.ToFloatArray();
         return fig.PlotScatter(x, y, label ?? ySeries.Name, color);
     }
 
-    public static HistogramPlot PlotHistogram(this Figure fig, ISeries series, int bins = 30, string? label = null, SKColor? color = null)
+    public static HistogramPlot PlotHistogram(this Figure fig, ISeries series, int bins = 30, string? label = null, Rgba32? color = null)
     {
         float[] vals = series.ToFloatArray();
         return fig.PlotHistogram(vals, bins, label ?? series.Name, color);
