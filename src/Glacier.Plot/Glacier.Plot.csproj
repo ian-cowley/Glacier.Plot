@@ -32,7 +32,7 @@
     <ProjectReference Include="..\..\..\Glacier.Graphics\src\Glacier.Graphics\Glacier.Graphics.csproj" />
   </ItemGroup>
   <ItemGroup Condition="!Exists('..\..\..\Glacier.Graphics\src\Glacier.Graphics\Glacier.Graphics.csproj')">
-    <PackageReference Include="Glacier.Graphics" Version="1.0.1" />
+    <PackageReference Include="Glacier.Graphics" Version="1.0.2" />
   </ItemGroup>
 
   <ItemGroup>
