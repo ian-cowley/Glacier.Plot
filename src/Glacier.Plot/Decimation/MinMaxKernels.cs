@@ -192,6 +192,8 @@ public static unsafe class MinMaxKernels
     /// <summary>
     /// Decimates 2D time series points using Min-Max downsampling directly into a Glacier.Graphics VectorPath
     /// using screen coordinate transformation without allocating intermediate point objects.
+    /// Each bucket is emitted as a disjoint vertical stroke (min→max within the pixel column)
+    /// to avoid self-intersecting polygons when the path is stroked.
     /// </summary>
     public static int DownsampleToPath(
         ReadOnlySpan<float> xValues,
@@ -201,32 +203,50 @@ public static unsafe class MinMaxKernels
         VectorPath path)
     {
         if (targetPixelWidth <= 0 || xValues.Length == 0) return 0;
-        int bufSize = Math.Max(targetPixelWidth * 2, 32);
-        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
-        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
-        try
+
+        int totalPoints = xValues.Length;
+        float bucketSize = (float)totalPoints / targetPixelWidth;
+        int outCount = 0;
+
+        for (int bucket = 0; bucket < targetPixelWidth; bucket++)
         {
-            int count = Downsample(xValues, yValues, targetPixelWidth, rentedX, rentedY);
-            if (count > 0)
+            int start = (int)(bucket * bucketSize);
+            int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
+            if (start >= end) continue;
+
+            float minVal = yValues[start];
+            float maxVal = yValues[start];
+            float minX = xValues[start];
+            float maxX = xValues[start];
+
+            for (int i = start + 1; i < end; i++)
             {
-                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
-                for (int i = 1; i < count; i++)
-                {
-                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
-                }
+                float y = yValues[i];
+                if (y < minVal) { minVal = y; minX = xValues[i]; }
+                if (y > maxVal) { maxVal = y; maxX = xValues[i]; }
             }
-            return count;
+
+            float pxMin = converter.GetPixelX(minX);
+            float pxMax = converter.GetPixelX(maxX);
+            float pyMin = converter.GetPixelY(minVal);
+            float pyMax = converter.GetPixelY(maxVal);
+
+            // Emit as a vertical segment within this pixel column.
+            // Use the average x pixel to keep it in the bucket's column.
+            float bucketPx = (pxMin + pxMax) * 0.5f;
+            path.MoveTo(bucketPx, pyMax);
+            path.LineTo(bucketPx, pyMin);
+            outCount += 2;
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(rentedX);
-            ArrayPool<float>.Shared.Return(rentedY);
-        }
+
+        return outCount;
     }
 
     /// <summary>
     /// Decimates uniformly spaced 1D signal points using Min-Max downsampling directly into a Glacier.Graphics VectorPath
     /// using screen coordinate transformation without allocating intermediate point objects.
+    /// Each bucket is emitted as a disjoint vertical stroke (max→min within the pixel column)
+    /// to avoid self-intersecting polygons when the path is stroked.
     /// </summary>
     public static int DownsampleUniformToPath(
         ReadOnlySpan<float> yValues,
@@ -237,26 +257,41 @@ public static unsafe class MinMaxKernels
         VectorPath path)
     {
         if (targetPixelWidth <= 0 || yValues.Length == 0) return 0;
-        int bufSize = Math.Max(targetPixelWidth * 2, 32);
-        float[] rentedX = ArrayPool<float>.Shared.Rent(bufSize);
-        float[] rentedY = ArrayPool<float>.Shared.Rent(bufSize);
-        try
+
+        int totalPoints = yValues.Length;
+        float bucketSize = (float)totalPoints / targetPixelWidth;
+        int outCount = 0;
+
+        for (int bucket = 0; bucket < targetPixelWidth; bucket++)
         {
-            int count = DownsampleUniform(yValues, xStart, xStep, targetPixelWidth, rentedX, rentedY);
-            if (count > 0)
+            int start = (int)(bucket * bucketSize);
+            int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
+            if (start >= end) continue;
+
+            float minVal = yValues[start];
+            float maxVal = yValues[start];
+            int minIdx = start;
+            int maxIdx = start;
+
+            for (int i = start + 1; i < end; i++)
             {
-                path.MoveTo(converter.GetPixelX(rentedX[0]), converter.GetPixelY(rentedY[0]));
-                for (int i = 1; i < count; i++)
-                {
-                    path.LineTo(converter.GetPixelX(rentedX[i]), converter.GetPixelY(rentedY[i]));
-                }
+                float y = yValues[i];
+                if (y < minVal) { minVal = y; minIdx = i; }
+                if (y > maxVal) { maxVal = y; maxIdx = i; }
             }
-            return count;
+
+            // Use the bucket's center x pixel for the vertical segment.
+            float bucketCenterX = xStart + ((minIdx + maxIdx) * 0.5f) * xStep;
+            float bucketPx = converter.GetPixelX(bucketCenterX);
+            float pyMin = converter.GetPixelY(minVal);
+            float pyMax = converter.GetPixelY(maxVal);
+
+            path.MoveTo(bucketPx, pyMax);
+            path.LineTo(bucketPx, pyMin);
+            outCount += 2;
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(rentedX);
-            ArrayPool<float>.Shared.Return(rentedY);
-        }
+
+        return outCount;
     }
 }
+
