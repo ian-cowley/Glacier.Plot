@@ -28,8 +28,14 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="Exists('..\..\..\Glacier.Graphics\src\Glacier.Graphics\Glacier.Graphics.csproj')">
+    <ProjectReference Include="..\..\..\Glacier.Graphics\src\Glacier.Graphics\Glacier.Graphics.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="!Exists('..\..\..\Glacier.Graphics\src\Glacier.Graphics\Glacier.Graphics.csproj')">
     <PackageReference Include="Glacier.Graphics" Version="1.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Glacier.Polaris" Version="1.0.19" />
     <PackageReference Include="Glacier.Tensor" Version="1.0.9" />
     <PackageReference Include="Glacier.Gpu" Version="1.0.8" />
