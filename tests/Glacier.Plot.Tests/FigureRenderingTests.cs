@@ -104,8 +104,21 @@ public class FigureRenderingTests
         ];
         fig.PlotHeatmap(matrix, rows: 3, cols: 3, ColorMap.Viridis);
 
+        // 2D heatmap render verification (both raster framebuffer and SVG XML)
+        using var heatFb = fig.RenderToFramebuffer(400, 300);
+        Rgba32 centerPixel = heatFb.GetPixel(200, 150);
+        Assert.NotEqual(fig.Theme.DataBackground, centerPixel);
+
         byte[] png = fig.RenderToBytes(400, 300);
         Assert.NotEmpty(png);
+
+        using var svg = new Glacier.Plot.Rendering.SvgGraphicsCanvas(400, 300);
+        fig.Render(svg, 400, 300);
+        string svgXml = svg.ToString();
+        Assert.Contains("<image ", svgXml);
+        Assert.Contains("data:image/png;base64,", svgXml);
+        var xmlDoc = new System.Xml.XmlDocument();
+        xmlDoc.LoadXml(svgXml);
     }
 
     [Fact]
@@ -122,6 +135,10 @@ public class FigureRenderingTests
             string content = File.ReadAllText(tempSvg);
             Assert.Contains("<svg", content);
             Assert.Contains("</svg>", content);
+
+            // Must parse as strictly well-formed XML with balanced <g> clip groups
+            var xmlDoc = new System.Xml.XmlDocument();
+            xmlDoc.LoadXml(content);
         }
         finally
         {

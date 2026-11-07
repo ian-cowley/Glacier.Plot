@@ -1,11 +1,14 @@
 namespace Glacier.Plot.Rendering;
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security;
 using System.Text;
 using Glacier.Graphics;
+using Glacier.Graphics.Codecs.Png;
+using Glacier.Graphics.Raster;
 using Glacier.Graphics.Text;
 using Glacier.Graphics.Vector;
 
@@ -16,7 +19,9 @@ using Glacier.Graphics.Vector;
 public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 {
     private readonly StringBuilder _sb = new();
-    private int _clipIdCounter = 0;
+    private readonly Stack<int> _saveGroupCounts = new();
+    private int _unscopedOpenGroups;
+    private int _clipIdCounter;
 
     public int Width { get; }
     public int Height { get; }
@@ -88,6 +93,7 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
         if (text.IsEmpty || paint.Color.A == 0) return;
 
         string escaped = SecurityElement.Escape(text.ToString()) ?? string.Empty;
+        string escapedFamily = SecurityElement.Escape(font.FamilyName) ?? "Sans-Serif";
         string fill = FormatColor(paint.Color);
         string fontWeight = font.Bold ? "font-weight=\"bold\" " : string.Empty;
         string fontStyle = font.Italic ? "font-style=\"italic\" " : string.Empty;
@@ -97,7 +103,7 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
             "<text x=\"{0:0.##}\" y=\"{1:0.##}\" font-family=\"{2}\" font-size=\"{3:0.##}\" {4}{5}fill=\"{6}\">{7}</text>",
             x,
             y,
-            font.FamilyName,
+            escapedFamily,
             font.Size,
             fontWeight,
             fontStyle,
@@ -107,17 +113,48 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 
     public void DrawImage(in ReadOnlySpan2D<Rgba32> image, float x, float y, float width, float height)
     {
-        // Vector SVG canvas image fallback
+        if (image.Width <= 0 || image.Height <= 0 || width <= 0f || height <= 0f) return;
+
+        using var fb = new LinearFramebuffer(image.Width, image.Height);
+        for (int r = 0; r < image.Height; r++)
+        {
+            image.GetRowSpan(r).CopyTo(fb.GetRowSpan(r));
+        }
+
+        byte[] pngBytes = PngEncoder.Encode(fb);
+        string base64 = Convert.ToBase64String(pngBytes);
+
+        _sb.AppendLine(string.Format(
+            CultureInfo.InvariantCulture,
+            "<image x=\"{0:0.##}\" y=\"{1:0.##}\" width=\"{2:0.##}\" height=\"{3:0.##}\" preserveAspectRatio=\"none\" style=\"image-rendering:pixelated\" href=\"data:image/png;base64,{4}\" />",
+            x,
+            y,
+            width,
+            height,
+            base64));
     }
 
     public void Save()
     {
+        _saveGroupCounts.Push(1);
         _sb.AppendLine("<g>");
     }
 
     public void Restore()
     {
-        _sb.AppendLine("</g>");
+        if (_saveGroupCounts.Count > 0)
+        {
+            int count = _saveGroupCounts.Pop();
+            for (int i = 0; i < count; i++)
+            {
+                _sb.AppendLine("</g>");
+            }
+        }
+        else if (_unscopedOpenGroups > 0)
+        {
+            _unscopedOpenGroups--;
+            _sb.AppendLine("</g>");
+        }
     }
 
     public void ClipPath(in VectorPath path)
@@ -129,13 +166,22 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 
         _sb.AppendLine(string.Format(
             CultureInfo.InvariantCulture,
-            "<clipPath id=\"{0}\"><path d=\"{1}\" /></clipPath>",
+            "<defs><clipPath id=\"{0}\"><path d=\"{1}\" /></clipPath></defs>",
             clipId,
             d));
         _sb.AppendLine(string.Format(
             CultureInfo.InvariantCulture,
             "<g clip-path=\"url(#{0})\">",
             clipId));
+
+        if (_saveGroupCounts.Count > 0)
+        {
+            _saveGroupCounts.Push(_saveGroupCounts.Pop() + 1);
+        }
+        else
+        {
+            _unscopedOpenGroups++;
+        }
     }
 
     public void Flush() { }
@@ -153,6 +199,14 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
             Width,
             Height));
         sb.Append(_sb.ToString());
+
+        int unclosed = _unscopedOpenGroups;
+        foreach (int c in _saveGroupCounts) unclosed += c;
+        for (int i = 0; i < unclosed; i++)
+        {
+            sb.AppendLine("</g>");
+        }
+
         sb.AppendLine("</svg>");
         return sb.ToString();
     }

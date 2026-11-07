@@ -43,6 +43,7 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
 
     public void Append(float value)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         _buffer[_head] = value;
         _head = (_head + 1) % _capacity;
         if (_count < _capacity) _count++;
@@ -51,6 +52,7 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
 
     public void Append(ReadOnlySpan<float> values)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         for (int i = 0; i < values.Length; i++)
         {
             Append(values[i]);
@@ -66,6 +68,7 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
 
     public AxisLimits GetLimits()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (_count == 0) return AxisLimits.Default;
 
         float min = _buffer[0];
@@ -89,6 +92,7 @@ public sealed unsafe class StreamingLinePlot : IPlottable, IDisposable
 
     public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (_count < 2) return;
 
         // Unroll circular buffer into linear contiguous span using rented array

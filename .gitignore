@@ -2,6 +2,7 @@
 [Bb]in/
 [Oo]bj/
 [Rr]elease/
+[Tt]est[Rr]esults/
 
 # IDE and editor folders
 .vs/
@@ -24,7 +25,18 @@ BenchmarkDotNet.Artifacts/
 
 # NuGet
 *.nupkg
+*.snupkg
 packages/
+
+# Secrets & configuration
+appsettings*.json
+!appsettings.template.json
+*.env
+*.env.*
+*.secret
+*.key
+*.pfx
+*.pem
 
 # Logs
 *.log

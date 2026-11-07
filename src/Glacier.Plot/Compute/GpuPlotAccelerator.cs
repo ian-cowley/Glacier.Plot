@@ -28,12 +28,17 @@ public static unsafe class GpuPlotAccelerator
     private static IntPtr s_fnTransformCoords;
     private static IntPtr s_fnBucketAvgs;
 
-    private static bool s_amdInitialized;
-    private static bool s_amdAvailable;
-
+    /// <summary>Gets whether NVIDIA CUDA PTX hardware acceleration is initialized and available.</summary>
     public static bool IsNvidiaAvailable => EnsureNvidiaInitialized();
-    public static bool IsAmdAvailable => EnsureAmdInitialized();
-    public static bool IsGpuAvailable => IsNvidiaAvailable || IsAmdAvailable;
+
+    /// <summary>
+    /// Gets whether AMD HIP GPU kernel offload is available.
+    /// Currently false because embedded compute kernels use NVVM PTX; AMD/Intel/ARM hosts execute multi-core AVX-512/AVX2 SIMD kernels.
+    /// </summary>
+    public static bool IsAmdAvailable => false;
+
+    /// <summary>Gets whether bare-metal GPU kernel acceleration is available.</summary>
+    public static bool IsGpuAvailable => IsNvidiaAvailable;
 
     #region Driver Initialization
 
@@ -71,9 +76,9 @@ public static unsafe class GpuPlotAccelerator
                 }
 
                 string ptx = GpuPlotKernels.PtxSource;
-                if (!ptx.Contains($".target {targetArch}"))
+                if (!ptx.Contains($".target {targetArch}", StringComparison.Ordinal))
                 {
-                    ptx = System.Text.RegularExpressions.Regex.Replace(ptx, @"\.target\s+sm_\d+", $".target {targetArch}");
+                    ptx = ptx.Replace(".target sm_89", $".target {targetArch}", StringComparison.Ordinal);
                 }
 
                 byte[] ptxBytes = Encoding.UTF8.GetBytes(ptx + "\0");
@@ -100,37 +105,6 @@ public static unsafe class GpuPlotAccelerator
             }
 
             return s_nvidiaAvailable;
-        }
-    }
-
-    private static bool EnsureAmdInitialized()
-    {
-        if (s_amdInitialized) return s_amdAvailable;
-        lock (s_initLock)
-        {
-            if (s_amdInitialized) return s_amdAvailable;
-            try
-            {
-                if (!HipDriver.IsAvailable() || HipDriver.Init(0) != 0 || HipDriver.GetDeviceCount(out int count) != 0 || count == 0)
-                {
-                    s_amdAvailable = false;
-                    s_amdInitialized = true;
-                    return false;
-                }
-
-                HipDriver.SetDevice(0);
-                s_amdAvailable = true;
-            }
-            catch
-            {
-                s_amdAvailable = false;
-            }
-            finally
-            {
-                s_amdInitialized = true;
-            }
-
-            return s_amdAvailable;
         }
     }
 
@@ -293,6 +267,28 @@ public static unsafe class GpuPlotAccelerator
                         var vx = Vector512.Load(pxin + i);
                         var vy = Vector512.Load(pyin + i);
                         var rx = Vector512.FusedMultiplyAdd(vx - vxMin, vpxPerX, vdataLeft);
+                        var ry = vdataBottom - (vy - vyMin) * vpxPerY;
+                        rx.Store(pxout + i);
+                        ry.Store(pyout + i);
+                        i += step;
+                    }
+                }
+                else if (Vector256.IsHardwareAccelerated && end - i >= Vector256<float>.Count)
+                {
+                    int step = Vector256<float>.Count;
+                    int limit = end - step;
+                    var vxMin = Vector256.Create(xMin);
+                    var vyMin = Vector256.Create(yMin);
+                    var vpxPerX = Vector256.Create(pxPerX);
+                    var vpxPerY = Vector256.Create(pxPerY);
+                    var vdataLeft = Vector256.Create(dataLeft);
+                    var vdataBottom = Vector256.Create(dataBottom);
+
+                    while (i <= limit)
+                    {
+                        var vx = Vector256.Load(pxin + i);
+                        var vy = Vector256.Load(pyin + i);
+                        var rx = (vx - vxMin) * vpxPerX + vdataLeft;
                         var ry = vdataBottom - (vy - vyMin) * vpxPerY;
                         rx.Store(pxout + i);
                         ry.Store(pyout + i);

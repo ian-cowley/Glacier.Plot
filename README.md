@@ -25,11 +25,11 @@
 3. **Incapable of High-Frequency Streaming**: Real-time sensor, telemetry, or financial market feeds force full canvas re-invalidation, capping update rates at a sluggish 5–10 Hz.
 
 **Glacier.Plot** redefines 2D data visualization with:
-- **Pure Managed C# / GPU-Accelerated Rasterization & Compute Kernels**: Multi-backend rendering engine powered by pure C# `Glacier.Graphics`, paired with direct driver P/Invoke bare-metal GPU decimation (`nvcuda.dll` and `amdhip64.dll`).
+- **Pure Managed C# / GPU-Accelerated Rasterization & Compute Kernels**: Multi-backend rendering engine powered by pure C# `Glacier.Graphics`, paired with direct NVIDIA CUDA PTX driver compute decimation (`nvcuda.dll` / `libcuda.so.1`) and multi-core `Vector512` / `Vector256` SIMD CPU kernels.
 - **10.7+ Billion Points/Sec GPU Decimation**: Hardware compute kernels (`plot_minmax_decimate_fp32`) downsample 1,000,000+ data points into target pixel columns in **< 0.1 ms** (10,795 M pts/s).
-- **GPU Viewport Transforms**: Real-time parallel affine coordinate transforms (`plot_transform_coords_fp32`) mapping world data to screen pixels on NVIDIA RTX 4060 dGPU and AMD APUs.
+- **GPU & SIMD Viewport Transforms**: Real-time parallel affine coordinate transforms (`plot_transform_coords_fp32`) mapping world data to screen pixels.
 - **Real-Time Streaming at 60/120 FPS**: Zero-allocation ring-buffer rendering enables continuous high-frequency telemetry visualization without garbage collection stutters.
-- **Direct Polaris DataFrame Interop**: Plots directly from `Polaris.Series` unmanaged spans without copying data into intermediate arrays.
+- **Direct Polaris & Tensor Interop**: Plots directly from `Glacier.Polaris` series and `Glacier.Tensor` matrices without intermediate copies.
 
 ---
 
@@ -76,8 +76,8 @@ All figures below are generated directly from the included `Glacier.Plot.Demo` s
                    ▼
 ┌──────────────────────────────────────┐
 │ Output Target                        │
-│ ├── Avalonia UI / Desktop Window     │
-│ ├── Blazor WebAssembly / Canvas      │
+│ ├── Glacier.Desktop Window           │
+│ ├── Blazor / LinearFramebuffer       │
 │ └── Vector SVG / PNG Stream          │
 └──────────────────────────────────────┘
 ```
@@ -101,42 +101,44 @@ All figures below are generated directly from the included `Glacier.Plot.Demo` s
 ## 4. Quickstart API
 
 ```csharp
-using Glacier.Plot;
-using Glacier.Plot.Rendering;
+using Glacier.Plot.Core;
+using Glacier.Plot.Figures;
+using Glacier.Plot.Interop;
 using Glacier.Polaris;
 
 // Zero-copy plotting directly from a Glacier.Polaris DataFrame
-using var df = DataFrame.ReadParquet("telemetry_10m.parquet");
-ReadOnlySpan<float> time = df["Timestamp"].AsSpan<float>();
-ReadOnlySpan<float> voltage = df["Voltage"].AsSpan<float>();
+var df = DataFrame.ReadParquet("telemetry_10m.parquet");
 
-// Initialize hardware-accelerated plot view
-var plot = new PlotView()
-    .WithDimensions(width: 1920, height: 1080)
-    .WithTheme(PlotTheme.Dark);
+using var fig = new Figure
+{
+    Title = "Sensor Telemetry",
+    Theme = PlotTheme.Dark
+};
+fig.XAxis.Label = "Timestamp (s)";
+fig.YAxis.Label = "Voltage (V)";
 
-// Add high-frequency line series with automated SIMD LTTB downsampling
-plot.AddSignal(time, voltage, label: "Sensor Voltage", color: Colors.Cyan);
+// Add high-frequency line series with automated SIMD LTTB / MinMax downsampling
+fig.PlotLine(df.GetColumn("Timestamp"), df.GetColumn("Voltage"), label: "Sensor Voltage", color: Colors.Cyan);
 
-// Render to high-resolution PNG or display in Avalonia/Desktop UI
-plot.SavePng("output_4k.png", width: 3840, height: 2160);
+// Render to high-resolution PNG or compliant Vector SVG
+fig.SavePng("output_4k.png", width: 3840, height: 2160);
+fig.SaveSvg("output_vector.svg", width: 1920, height: 1080);
 ```
 
-### 4.2 Bare-Metal GPU Decimation (10.7+ Billion Pts/sec)
+### 4.2 Bare-Metal GPU / SIMD Decimation (10.7+ Billion Pts/sec)
 ```csharp
 using Glacier.Plot.Compute;
 using Glacier.Plot.Core;
 
-// Downsample 1,000,000 raw telemetry points to 2,000 pixel columns directly on GPU
+// Downsample 1,000,000 raw telemetry points to 2,000 pixel columns
 float[] outX = new float[4000];
 float[] outY = new float[4000];
 
 GpuPlotAccelerator.MinMaxDownsample(
-    time.ToArray(), voltage.ToArray(), 
-    targetPixelWidth: 2000, 
-    outX, outY, 
-    target: GpuTarget.Auto
-);
+    timeArray, voltageArray,
+    targetPixelWidth: 2000,
+    outX, outY,
+    target: GpuTarget.Auto);
 ```
 
 ---
@@ -145,18 +147,18 @@ GpuPlotAccelerator.MinMaxDownsample(
 
 `Glacier.Plot` is designed to seamlessly integrate with the other engines in the **Glacier .NET 10 High-Performance Ecosystem**:
 
-- **[Master Architecture Plan](../../GLACIER_ECOSYSTEM_MASTER_PLAN.md)**: Ecosystem blueprint mapping the 9 Python domains to .NET 10 counterparts.
-- **[Glacier.Plot Technical Specification](../../docs/plans/04_GLACIER_PLOT_SPEC.md)**: Deep dive into SIMD LTTB algorithms and GPU rasterization pipelines.
-- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Columnar DataFrame engine feeding zero-copy data points to Glacier.Plot.
-- **[Glacier.StatsViz](https://github.com/ian-cowley/Glacier.StatsViz)**: Advanced statistical graphics grammar built on top of Glacier.Plot.
-- **[Glacier.Desktop](https://github.com/ian-cowley/Glacier.Desktop)**: GPU-accelerated desktop host for interactive visualizations.
+- **[Glacier.Graphics](https://github.com/ian-cowley/Glacier.Graphics)**: Pure C# 2D vector, font, and raster engine powering `Glacier.Plot`.
+- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Columnar DataFrame engine feeding zero-copy data points to `Glacier.Plot`.
+- **[Glacier.StatsViz](https://github.com/ian-cowley/Glacier.StatsViz)**: Advanced statistical graphics grammar built on top of `Glacier.Plot`.
+- **[Glacier.Desktop](https://github.com/ian-cowley/Glacier.Desktop)**: Hardware-accelerated desktop host for interactive visualizations.
 
 ---
 
-## 🆕 What's New in v1.0.2
+## 🆕 What's New in v1.1.0
 
-- **`GpuPlotStreamSlot` context pool** — eliminates the `s_initLock` global initialisation lock, allowing concurrent GPU plot rendering across multiple threads.
-- **22 tests** passing (100 %).
+- **Strict Native AOT & Zero Transitive Vulnerabilities**: Upgraded to `Glacier.Graphics 1.1.0`, `Glacier.Polaris 1.1.0`, `Glacier.Tensor 1.1.0`, and `Glacier.Gpu 1.1.0` with `<IsAotCompatible>true</IsAotCompatible>` and `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
+- **Compliant Vector SVG & Lossless Heatmap Export**: Balanced `<g>` clip-path XML hierarchy in `SvgGraphicsCanvas` plus embedded base64 PNG heatmap rendering.
+- **AVX2 (`Vector256`) + AVX-512 (`Vector512`) Coordinate Transforms** alongside CUDA PTX stream-pooled GPU acceleration.
 
 ---
 

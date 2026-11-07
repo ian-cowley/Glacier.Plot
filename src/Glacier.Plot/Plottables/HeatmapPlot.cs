@@ -30,6 +30,8 @@ public sealed class HeatmapPlot : IPlottable
 
     public HeatmapPlot(ReadOnlySpan<float> flatData, int rows, int cols, ColorMap colormap = ColorMap.Viridis)
     {
+        if (rows <= 0) throw new ArgumentOutOfRangeException(nameof(rows));
+        if (cols <= 0) throw new ArgumentOutOfRangeException(nameof(cols));
         if (flatData.Length != rows * cols)
             throw new ArgumentException("Data length must equal rows * cols.");
 
@@ -81,7 +83,12 @@ public sealed class HeatmapPlot : IPlottable
         float pyBottom = converter.GetPixelY(0);
 
         var span2d = new ReadOnlySpan2D<Rgba32>(pixels, _cols, _rows, _cols);
-        canvas.DrawImage(span2d, pxLeft, pyTop, Math.Abs(pxRight - pxLeft), Math.Abs(pyBottom - pyTop));
+        canvas.DrawImage(
+            span2d,
+            MathF.Min(pxLeft, pxRight),
+            MathF.Min(pyTop, pyBottom),
+            MathF.Abs(pxRight - pxLeft),
+            MathF.Abs(pyBottom - pyTop));
     }
 
     public static Rgba32 SampleColormap(float t, ColorMap map) => map switch
