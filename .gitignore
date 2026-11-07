@@ -49,3 +49,10 @@ Thumbs.db
 # Scratch / working directories
 brain/
 scratch/
+
+bin/
+obj/
+TestResults/
+*.tmp
+*.env*
+!.env.example
