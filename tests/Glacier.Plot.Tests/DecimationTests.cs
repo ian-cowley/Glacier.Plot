@@ -135,4 +135,59 @@ public class DecimationTests
         Assert.True(padded.YMin < limits.YMin);
         Assert.True(padded.YMax > limits.YMax);
     }
+
+    [Fact]
+    public void MinMax_LargeBucketSimd_MatchesScalarReferenceExactly()
+    {
+        const int n = 2048;
+        const int targetPixels = 16;
+        float[] x = new float[n];
+        float[] y = new float[n];
+        var rng = new Random(1337);
+        for (int i = 0; i < n; i++)
+        {
+            x[i] = i * 0.25f;
+            y[i] = (float)(rng.NextDouble() * 200.0 - 100.0);
+        }
+        // Inject tied extremes inside buckets
+        y[45] = -500f;
+        y[50] = -500f;
+        y[70] = 600f;
+
+        float[] outX = new float[targetPixels * 2];
+        float[] outY = new float[targetPixels * 2];
+        int actualCount = MinMaxKernels.Downsample(x, y, targetPixels, outX, outY);
+
+        var expX = new float[targetPixels * 2];
+        var expY = new float[targetPixels * 2];
+        float bucketSize = (float)n / targetPixels;
+        int expIdx = 0;
+        for (int b = 0; b < targetPixels; b++)
+        {
+            int start = (int)(b * bucketSize);
+            int end = Math.Min((int)((b + 1) * bucketSize), n);
+            if (start >= end) continue;
+            float minV = y[start], maxV = y[start];
+            int minI = start, maxI = start;
+            for (int i = start + 1; i < end; i++)
+            {
+                if (y[i] < minV) { minV = y[i]; minI = i; }
+                if (y[i] > maxV) { maxV = y[i]; maxI = i; }
+            }
+            if (minI <= maxI)
+            {
+                expX[expIdx] = x[minI]; expY[expIdx++] = minV;
+                if (minI != maxI) { expX[expIdx] = x[maxI]; expY[expIdx++] = maxV; }
+            }
+            else
+            {
+                expX[expIdx] = x[maxI]; expY[expIdx++] = maxV;
+                expX[expIdx] = x[minI]; expY[expIdx++] = minV;
+            }
+        }
+
+        Assert.Equal(expIdx, actualCount);
+        Assert.Equal(expX[..expIdx], outX[..actualCount]);
+        Assert.Equal(expY[..expIdx], outY[..actualCount]);
+    }
 }

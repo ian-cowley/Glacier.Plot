@@ -67,19 +67,70 @@ public static unsafe class MinMaxKernels
                 float maxVal = pY[start];
                 int minIdx = start;
                 int maxIdx = start;
+                int bucketLen = end - start;
 
-                for (int i = start + 1; i < end; i++)
+                if (Vector256.IsHardwareAccelerated && bucketLen >= 32)
                 {
-                    float y = pY[i];
-                    if (y < minVal)
+                    var vMin = Vector256.Load(pY + start);
+                    var vMax = vMin;
+                    int i = start + 8;
+                    int limit = end - 8;
+                    for (; i <= limit; i += 8)
                     {
-                        minVal = y;
-                        minIdx = i;
+                        var v = Vector256.Load(pY + i);
+                        vMin = Vector256.Min(vMin, v);
+                        vMax = Vector256.Max(vMax, v);
                     }
-                    if (y > maxVal)
+
+                    float simdMin = float.PositiveInfinity;
+                    float simdMax = float.NegativeInfinity;
+                    for (int lane = 0; lane < 8; lane++)
                     {
-                        maxVal = y;
-                        maxIdx = i;
+                        float eMin = vMin.GetElement(lane);
+                        float eMax = vMax.GetElement(lane);
+                        if (eMin < simdMin) simdMin = eMin;
+                        if (eMax > simdMax) simdMax = eMax;
+                    }
+                    for (; i < end; i++)
+                    {
+                        float y = pY[i];
+                        if (y < simdMin) simdMin = y;
+                        if (y > simdMax) simdMax = y;
+                    }
+
+                    if (float.IsFinite(simdMin) && float.IsFinite(simdMax))
+                    {
+                        ReadOnlySpan<float> bucketSpan = new(pY + start, bucketLen);
+                        minVal = simdMin;
+                        maxVal = simdMax;
+                        minIdx = start + bucketSpan.IndexOf(simdMin);
+                        maxIdx = start + bucketSpan.IndexOf(simdMax);
+                    }
+                    else
+                    {
+                        for (int j = start + 1; j < end; j++)
+                        {
+                            float y = pY[j];
+                            if (y < minVal) { minVal = y; minIdx = j; }
+                            if (y > maxVal) { maxVal = y; maxIdx = j; }
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = start + 1; i < end; i++)
+                    {
+                        float y = pY[i];
+                        if (y < minVal)
+                        {
+                            minVal = y;
+                            minIdx = i;
+                        }
+                        if (y > maxVal)
+                        {
+                            maxVal = y;
+                            maxIdx = i;
+                        }
                     }
                 }
 
@@ -150,19 +201,70 @@ public static unsafe class MinMaxKernels
                 float maxVal = pY[start];
                 int minIdx = start;
                 int maxIdx = start;
+                int bucketLen = end - start;
 
-                for (int i = start + 1; i < end; i++)
+                if (Vector256.IsHardwareAccelerated && bucketLen >= 32)
                 {
-                    float y = pY[i];
-                    if (y < minVal)
+                    var vMin = Vector256.Load(pY + start);
+                    var vMax = vMin;
+                    int i = start + 8;
+                    int limit = end - 8;
+                    for (; i <= limit; i += 8)
                     {
-                        minVal = y;
-                        minIdx = i;
+                        var v = Vector256.Load(pY + i);
+                        vMin = Vector256.Min(vMin, v);
+                        vMax = Vector256.Max(vMax, v);
                     }
-                    if (y > maxVal)
+
+                    float simdMin = float.PositiveInfinity;
+                    float simdMax = float.NegativeInfinity;
+                    for (int lane = 0; lane < 8; lane++)
                     {
-                        maxVal = y;
-                        maxIdx = i;
+                        float eMin = vMin.GetElement(lane);
+                        float eMax = vMax.GetElement(lane);
+                        if (eMin < simdMin) simdMin = eMin;
+                        if (eMax > simdMax) simdMax = eMax;
+                    }
+                    for (; i < end; i++)
+                    {
+                        float y = pY[i];
+                        if (y < simdMin) simdMin = y;
+                        if (y > simdMax) simdMax = y;
+                    }
+
+                    if (float.IsFinite(simdMin) && float.IsFinite(simdMax))
+                    {
+                        ReadOnlySpan<float> bucketSpan = new(pY + start, bucketLen);
+                        minVal = simdMin;
+                        maxVal = simdMax;
+                        minIdx = start + bucketSpan.IndexOf(simdMin);
+                        maxIdx = start + bucketSpan.IndexOf(simdMax);
+                    }
+                    else
+                    {
+                        for (int j = start + 1; j < end; j++)
+                        {
+                            float y = pY[j];
+                            if (y < minVal) { minVal = y; minIdx = j; }
+                            if (y > maxVal) { maxVal = y; maxIdx = j; }
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = start + 1; i < end; i++)
+                    {
+                        float y = pY[i];
+                        if (y < minVal)
+                        {
+                            minVal = y;
+                            minIdx = i;
+                        }
+                        if (y > maxVal)
+                        {
+                            maxVal = y;
+                            maxIdx = i;
+                        }
                     }
                 }
 

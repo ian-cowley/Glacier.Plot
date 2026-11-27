@@ -10,7 +10,7 @@ internal static class GpuPlotKernels
 // Based on NVVM 7.0.1
 //
 
-.version 9.3
+.version 8.0
 .target sm_89
 .address_size 64
 
