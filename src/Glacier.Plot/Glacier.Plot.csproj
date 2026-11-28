@@ -14,7 +14,7 @@
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Plot</PackageId>
-    <Version>1.2.1</Version>
+    <Version>1.2.2</Version>
     <PackageReleaseNotes>v1.2.1: Vector256 SIMD MinMax decimation inner scan and aligned Gpu/Graphics/Polaris/Tensor dependencies.</PackageReleaseNotes>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
