@@ -59,6 +59,52 @@ public static class Program
         double msMinMax = sw.Elapsed.TotalMilliseconds / 10;
         Console.WriteLine($"  MinMax Decimation (10,000,000 pts -> 1,920 px): {msMinMax:F3} ms ({(10.0 / (msMinMax / 1000)):F1} M pts/s)");
 
+        // 5. GPU MinMax Decimation (1,000,000 pts -> 2,000 px)
+        RunGpuMinMaxBenchmark();
+
         Console.WriteLine("================================================================================");
+    }
+
+    private static void RunGpuMinMaxBenchmark()
+    {
+        const int pointCount = 1_000_000;
+        const int targetWidth = 1_000; // outputs 2,000 points
+        float[] xs = new float[pointCount];
+        float[] ys = new float[pointCount];
+        for (int i = 0; i < pointCount; i++)
+        {
+            xs[i] = i * 0.001f;
+            ys[i] = MathF.Sin(i * 0.002f) + 0.5f * MathF.Cos(i * 0.007f);
+        }
+
+        float[] outX = new float[targetWidth * 2];
+        float[] outY = new float[targetWidth * 2];
+
+        try
+        {
+            Glacier.Plot.Compute.GpuPlotAccelerator.MinMaxDownsample(
+                xs, ys, targetWidth, outX, outY, Glacier.Plot.Core.GpuTarget.Auto);
+
+            const int iters = 20;
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < iters; i++)
+            {
+                Glacier.Plot.Compute.GpuPlotAccelerator.MinMaxDownsample(
+                    xs, ys, targetWidth, outX, outY, Glacier.Plot.Core.GpuTarget.Auto);
+            }
+            sw.Stop();
+
+            double ms = sw.Elapsed.TotalMilliseconds / iters;
+            string backend = Glacier.Plot.Compute.GpuPlotAccelerator.IsNvidiaAvailable ? "GPU CUDA" : "CPU SIMD";
+            Console.WriteLine($"  MinMaxDownsample (1,000,000 pts -> 2,000 px, {backend}): {ms:F3} ms ({(1.0 / (ms / 1000)):F1} M pts/s)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  MinMaxDownsample GPU skipped: {ex.Message}");
+        }
+        finally
+        {
+            Glacier.Plot.Compute.GpuPlotAccelerator.ReleaseGpuResources();
+        }
     }
 }
