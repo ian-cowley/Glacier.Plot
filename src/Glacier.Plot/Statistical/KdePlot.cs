@@ -10,11 +10,14 @@ using Glacier.Plot.Statistical.Kernels;
 /// <summary>
 /// Continuous 1D Kernel Density Estimation probability curve with optional area shading.
 /// </summary>
-public sealed class KdePlot : IPlottable
+public sealed class KdePlot : IPlottable, IDisposable
 {
     private readonly float[] _grid;
     private readonly float[] _density;
     private readonly int _points;
+
+    private readonly VectorPath _path = new();
+    private readonly VectorPath _fillPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.Cyan, IsFilled = true, FillAlpha = 80 };
@@ -59,32 +62,39 @@ public sealed class KdePlot : IPlottable
     {
         if (_points < 2) return;
 
-        var path = new VectorPath();
-        path.MoveTo(converter.GetPixelX(_grid[0]), converter.GetPixelY(_density[0]));
+        _path.Clear();
+        _path.MoveTo(converter.GetPixelX(_grid[0]), converter.GetPixelY(_density[0]));
 
         for (int i = 1; i < _points; i++)
         {
-            path.LineTo(converter.GetPixelX(_grid[i]), converter.GetPixelY(_density[i]));
+            _path.LineTo(converter.GetPixelX(_grid[i]), converter.GetPixelY(_density[i]));
         }
 
         if (Style.IsFilled)
         {
-            var fillPath = new VectorPath(path);
+            _fillPath.Clear();
+            _fillPath.AddPath(_path);
             float lastPx = converter.GetPixelX(_grid[^1]);
             float firstPx = converter.GetPixelX(_grid[0]);
             float baselinePy = converter.GetPixelY(0.0);
-            fillPath.LineTo(lastPx, baselinePy);
-            fillPath.LineTo(firstPx, baselinePy);
-            fillPath.Close();
+            _fillPath.LineTo(lastPx, baselinePy);
+            _fillPath.LineTo(firstPx, baselinePy);
+            _fillPath.Close();
 
-            canvas.FillPath(fillPath, new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill));
+            canvas.FillPath(_fillPath, new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill));
         }
 
-        canvas.DrawPath(path, new Paint(
+        canvas.DrawPath(_path, new Paint(
             Style.Color,
             PaintStyle.Stroke,
             Style.StrokeWidth,
             StrokeJoin.Round,
             StrokeCap.Round));
+    }
+
+    public void Dispose()
+    {
+        _path.Clear();
+        _fillPath.Clear();
     }
 }

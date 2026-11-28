@@ -3,8 +3,11 @@ namespace Glacier.Plot.Statistical.Kernels;
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using System.Runtime.Intrinsics.Arm;
+using System.Runtime.Intrinsics.X86;
+using System.Threading.Tasks;
+using Glacier.Plot.Core;
+using Glacier.Plot.Statistical.Compute;
 
 /// <summary>
 /// High-speed SIMD-accelerated Gaussian Kernel Density Estimation (KDE) engine.
@@ -143,8 +146,8 @@ public static unsafe class KdeKernels
         ReadOnlySpan<float> grid,
         float bandwidth,
         Span<float> outDensity,
-        Glacier.Plot.Statistical.Core.GpuTarget target)
-        => Glacier.Plot.Statistical.Compute.GpuStatsAccelerator.EvaluateKde(samples, grid, bandwidth, outDensity, target);
+        GpuTarget target)
+        => GpuStatsAccelerator.EvaluateKde(samples, grid, bandwidth, outDensity, target);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public static void VectorizedKde(
@@ -153,12 +156,14 @@ public static unsafe class KdeKernels
         float bandwidth,
         Span<float> outDensity)
     {
-        if (bandwidth <= 0)
-            throw new ArgumentOutOfRangeException(nameof(bandwidth), "Bandwidth must be positive.");
+        if (bandwidth <= 0 || !float.IsFinite(bandwidth))
+            throw new ArgumentOutOfRangeException(nameof(bandwidth), "Bandwidth must be finite and positive.");
 
         int numSamples = samples.Length;
         int numGrid = grid.Length;
         if (numSamples == 0 || numGrid == 0) return;
+        if (outDensity.Length < numGrid)
+            throw new ArgumentException("Output buffer too small.");
 
         float invH2 = 1.0f / (2.0f * bandwidth * bandwidth);
         float normFactor = 1.0f / (numSamples * bandwidth * MathF.Sqrt(2.0f * MathF.PI));
@@ -191,6 +196,95 @@ public static unsafe class KdeKernels
                     float gridVal = pGrid[g];
                     float sum = EvaluateSingleGridPoint(pSamples, numSamples, gridVal, invH2);
                     pOut[g] = sum * normFactor;
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void VectorizedKde2D(
+        ReadOnlySpan<float> xSamples,
+        ReadOnlySpan<float> ySamples,
+        ReadOnlySpan<float> xGrid,
+        ReadOnlySpan<float> yGrid,
+        float bandwidthX,
+        float bandwidthY,
+        Span<float> outDensity,
+        GpuTarget target)
+        => GpuStatsAccelerator.EvaluateKde2D(xSamples, ySamples, xGrid, yGrid, bandwidthX, bandwidthY, outDensity, target);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void VectorizedKde2D(
+        ReadOnlySpan<float> xSamples,
+        ReadOnlySpan<float> ySamples,
+        ReadOnlySpan<float> xGrid,
+        ReadOnlySpan<float> yGrid,
+        float bandwidthX,
+        float bandwidthY,
+        Span<float> outDensity)
+    {
+        if (xSamples.Length != ySamples.Length)
+            throw new ArgumentException("X and Y sample spans must have identical length.");
+        if (bandwidthX <= 0 || !float.IsFinite(bandwidthX))
+            throw new ArgumentOutOfRangeException(nameof(bandwidthX), "BandwidthX must be finite and positive.");
+        if (bandwidthY <= 0 || !float.IsFinite(bandwidthY))
+            throw new ArgumentOutOfRangeException(nameof(bandwidthY), "BandwidthY must be finite and positive.");
+
+        int numSamples = xSamples.Length;
+        int nx = xGrid.Length;
+        int ny = yGrid.Length;
+        if (numSamples == 0 || nx == 0 || ny == 0) return;
+
+        int gridTotal = checked(nx * ny);
+        if (outDensity.Length < gridTotal)
+            throw new ArgumentException("Output buffer too small for nx * ny 2D KDE grid.");
+
+        float invHx2 = 1.0f / (bandwidthX * bandwidthX);
+        float invHy2 = 1.0f / (bandwidthY * bandwidthY);
+        float normFactor = 1.0f / (numSamples * 2.0f * MathF.PI * bandwidthX * bandwidthY);
+
+        fixed (float* pXS = xSamples)
+        fixed (float* pYS = ySamples)
+        fixed (float* pXG = xGrid)
+        fixed (float* pYG = yGrid)
+        fixed (float* pOut = outDensity)
+        {
+            if (gridTotal >= 8 && (long)numSamples * gridTotal >= 32_768)
+            {
+                IntPtr ptrXS = (IntPtr)pXS;
+                IntPtr ptrYS = (IntPtr)pYS;
+                IntPtr ptrXG = (IntPtr)pXG;
+                IntPtr ptrYG = (IntPtr)pYG;
+                IntPtr ptrOut = (IntPtr)pOut;
+
+                Parallel.For(0, ny, gy =>
+                {
+                    float* pxs = (float*)ptrXS;
+                    float* pys = (float*)ptrYS;
+                    float* pxg = (float*)ptrXG;
+                    float* pyg = (float*)ptrYG;
+                    float* po = (float*)ptrOut;
+
+                    float gridY = pyg[gy];
+                    int rowOffset = gy * nx;
+                    for (int gx = 0; gx < nx; gx++)
+                    {
+                        float sum = EvaluateSingleGridPoint2D(pxs, pys, numSamples, pxg[gx], gridY, invHx2, invHy2);
+                        po[rowOffset + gx] = sum * normFactor;
+                    }
+                });
+            }
+            else
+            {
+                for (int gy = 0; gy < ny; gy++)
+                {
+                    float gridY = pYG[gy];
+                    int rowOffset = gy * nx;
+                    for (int gx = 0; gx < nx; gx++)
+                    {
+                        float sum = EvaluateSingleGridPoint2D(pXS, pYS, numSamples, pXG[gx], gridY, invHx2, invHy2);
+                        pOut[rowOffset + gx] = sum * normFactor;
+                    }
                 }
             }
         }
@@ -281,6 +375,88 @@ public static unsafe class KdeKernels
             float diff = gridVal - pSamples[s];
             float exponent = -(diff * diff) * invH2;
             sum += FastExpScalar(exponent);
+        }
+
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static float EvaluateSingleGridPoint2D(
+        float* pXSamples,
+        float* pYSamples,
+        int numSamples,
+        float gridX,
+        float gridY,
+        float invHx2,
+        float invHy2)
+    {
+        float sum = 0f;
+        int s = 0;
+
+        if (Avx512F.IsSupported && numSamples >= 16)
+        {
+            var vGX = Vector512.Create(gridX);
+            var vGY = Vector512.Create(gridY);
+            var vInvHx2 = Vector512.Create(invHx2);
+            var vInvHy2 = Vector512.Create(invHy2);
+            var vNegHalf = Vector512.Create(-0.5f);
+            var acc = Vector512<float>.Zero;
+
+            for (; s <= numSamples - 16; s += 16)
+            {
+                var dx = vGX - Vector512.Load(pXSamples + s);
+                var dy = vGY - Vector512.Load(pYSamples + s);
+                var q = Vector512.FusedMultiplyAdd(dx * dx, vInvHx2, dy * dy * vInvHy2);
+                acc += FastExpAvx512(q * vNegHalf);
+            }
+
+            sum += Vector512.Sum(acc);
+        }
+        else if (Avx2.IsSupported && numSamples >= 8)
+        {
+            var vGX = Vector256.Create(gridX);
+            var vGY = Vector256.Create(gridY);
+            var vInvHx2 = Vector256.Create(invHx2);
+            var vInvHy2 = Vector256.Create(invHy2);
+            var vNegHalf = Vector256.Create(-0.5f);
+            var acc = Vector256<float>.Zero;
+
+            for (; s <= numSamples - 8; s += 8)
+            {
+                var dx = vGX - Vector256.Load(pXSamples + s);
+                var dy = vGY - Vector256.Load(pYSamples + s);
+                var q = dx * dx * vInvHx2 + dy * dy * vInvHy2;
+                acc += FastExpAvx2(q * vNegHalf);
+            }
+
+            sum += Vector256.Sum(acc);
+        }
+        else if (AdvSimd.IsSupported && numSamples >= 4)
+        {
+            var vGX = Vector128.Create(gridX);
+            var vGY = Vector128.Create(gridY);
+            var vInvHx2 = Vector128.Create(invHx2);
+            var vInvHy2 = Vector128.Create(invHy2);
+            var vNegHalf = Vector128.Create(-0.5f);
+            var acc = Vector128<float>.Zero;
+
+            for (; s <= numSamples - 4; s += 4)
+            {
+                var dx = vGX - Vector128.Load(pXSamples + s);
+                var dy = vGY - Vector128.Load(pYSamples + s);
+                var q = dx * dx * vInvHx2 + dy * dy * vInvHy2;
+                acc += FastExpAdvSimd(q * vNegHalf);
+            }
+
+            sum += Vector128.Sum(acc);
+        }
+
+        for (; s < numSamples; s++)
+        {
+            float dx = gridX - pXSamples[s];
+            float dy = gridY - pYSamples[s];
+            float q = dx * dx * invHx2 + dy * dy * invHy2;
+            sum += FastExpScalar(-0.5f * q);
         }
 
         return sum;

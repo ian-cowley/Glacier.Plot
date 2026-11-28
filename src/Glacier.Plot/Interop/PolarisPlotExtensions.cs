@@ -2,7 +2,6 @@ namespace Glacier.Plot.Interop;
 
 using System;
 using Glacier.Graphics;
-using Glacier.Plot.Core;
 using Glacier.Plot.Figures;
 using Glacier.Plot.Plottables;
 using Glacier.Polaris;
@@ -14,7 +13,7 @@ using Glacier.Polaris.Data;
 public static class PolarisPlotExtensions
 {
     /// <summary>
-    /// Extracts a float span from an ISeries without copying when the underlying type is float.
+    /// Extracts a float array from an ISeries. When possible, prefer <see cref="AsFloatMemory"/> for zero-copy <see cref="Float32Series"/> access.
     /// </summary>
     public static float[] ToFloatArray(this ISeries series)
     {
@@ -66,13 +65,18 @@ public static class PolarisPlotExtensions
 
     public static ScatterPlot PlotScatter(this Figure fig, ISeries xSeries, ISeries ySeries, string? label = null, Rgba32? color = null)
     {
-        float[] x = xSeries.ToFloatArray();
-        float[] y = ySeries.ToFloatArray();
+        var x = xSeries.AsFloatMemory();
+        var y = ySeries.AsFloatMemory();
         return fig.PlotScatter(x, y, label ?? ySeries.Name, color);
     }
 
     public static HistogramPlot PlotHistogram(this Figure fig, ISeries series, int bins = 30, string? label = null, Rgba32? color = null)
     {
+        if (series is Float32Series f32)
+        {
+            return fig.PlotHistogram(f32.Memory.Span, bins, label ?? series.Name, color);
+        }
+
         float[] vals = series.ToFloatArray();
         return fig.PlotHistogram(vals, bins, label ?? series.Name, color);
     }

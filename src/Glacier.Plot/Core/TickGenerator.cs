@@ -13,12 +13,19 @@ public static class TickGenerator
     public static List<Tick> Generate(double min, double max, int approximateTicks = 8)
     {
         var result = new List<Tick>(approximateTicks + 2);
+        Generate(min, max, approximateTicks, result);
+        return result;
+    }
+
+    internal static void Generate(double min, double max, int approximateTicks, List<Tick> destination)
+    {
+        destination.Clear();
         if (double.IsNaN(min) || double.IsNaN(max) || min >= max || approximateTicks <= 1)
-            return result;
+            return;
 
         double span = max - min;
         double rawStep = span / approximateTicks;
-        if (rawStep <= 0) return result;
+        if (rawStep <= 0) return;
 
         double power = Math.Pow(10, Math.Floor(Math.Log10(rawStep)));
         double fraction = rawStep / power;
@@ -31,17 +38,16 @@ public static class TickGenerator
 
         double firstTick = Math.Ceiling(min / step) * step;
         int decimals = Math.Max(0, (int)Math.Ceiling(-Math.Log10(step)));
+        double maxAbs = Math.Max(Math.Abs(min), Math.Abs(max));
 
         for (double t = firstTick; t <= max + step * 0.0001; t += step)
         {
             // Avoid -0.0
             if (Math.Abs(t) < step * 0.0001) t = 0.0;
 
-            string label = FormatTick(t, decimals, Math.Max(Math.Abs(min), Math.Abs(max)));
-            result.Add(new Tick(t, label));
+            string label = FormatTick(t, decimals, maxAbs);
+            destination.Add(new Tick(t, label));
         }
-
-        return result;
     }
 
     private static string FormatTick(double val, int decimals, double maxAbs)

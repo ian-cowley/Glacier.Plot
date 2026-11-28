@@ -19,6 +19,12 @@ using Glacier.Plot.Rendering;
 public sealed class Figure : IDisposable
 {
     private readonly List<IPlottable> _plottables = new();
+    private readonly VectorPath _dataRectPath = new();
+    private readonly VectorPath _gridPath = new();
+    private readonly VectorPath _tickPath = new();
+    private readonly VectorPath _yAxisLabelPath = new();
+    private readonly List<Tick> _xTicksBuffer = new(16);
+    private readonly List<Tick> _yTicksBuffer = new(16);
     private int _paletteIndex = 0;
 
     private static readonly Font s_labelFont = new(11.0f);
@@ -81,6 +87,17 @@ public sealed class Figure : IDisposable
         return plot;
     }
 
+    public ScatterPlot PlotScatter(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, string? label = null, Rgba32? color = null)
+    {
+        var style = new PlotStyle { Color = color ?? GetNextPaletteColor(), Marker = MarkerShape.Circle };
+        var plot = new ScatterPlot(x, y, style) { Label = label };
+        _plottables.Add(plot);
+        return plot;
+    }
+
+    public ScatterPlot PlotScatter(float[] x, float[] y, string? label = null, Rgba32? color = null)
+        => PlotScatter((ReadOnlyMemory<float>)x, (ReadOnlyMemory<float>)y, label, color);
+
     public ScatterPlot PlotScatter(ReadOnlySpan<float> x, ReadOnlySpan<float> y, string? label = null, Rgba32? color = null)
     {
         var style = new PlotStyle { Color = color ?? GetNextPaletteColor(), Marker = MarkerShape.Circle };
@@ -140,6 +157,10 @@ public sealed class Figure : IDisposable
             if (p is IDisposable d) d.Dispose();
         }
         _plottables.Clear();
+        _dataRectPath.Clear();
+        _gridPath.Clear();
+        _tickPath.Clear();
+        _yAxisLabelPath.Clear();
         _paletteIndex = 0;
     }
 
@@ -176,70 +197,81 @@ public sealed class Figure : IDisposable
         canvas.Clear(Theme.FigureBackground);
 
         // 2. Fill Data Area Background
-        var dataRect = new VectorPath();
-        dataRect.AddRect(dims.DataLeft, dims.DataTop, dims.DataWidth, dims.DataHeight);
-        canvas.FillPath(dataRect, new Paint(Theme.DataBackground, PaintStyle.Fill));
+        _dataRectPath.Clear();
+        _dataRectPath.AddRect(dims.DataLeft, dims.DataTop, dims.DataWidth, dims.DataHeight);
+        canvas.FillPath(_dataRectPath, new Paint(Theme.DataBackground, PaintStyle.Fill));
 
         // 3. Grid Lines & Ticks Calculation
-        var xTicks = XAxis.ShowTicks ? TickGenerator.Generate(limits.XMin, limits.XMax, 8) : [];
-        var yTicks = YAxis.ShowTicks ? TickGenerator.Generate(limits.YMin, limits.YMax, 6) : [];
+        if (XAxis.ShowTicks || XAxis.ShowGrid)
+            TickGenerator.Generate(limits.XMin, limits.XMax, 8, _xTicksBuffer);
+        else
+            _xTicksBuffer.Clear();
+
+        if (YAxis.ShowTicks || YAxis.ShowGrid)
+            TickGenerator.Generate(limits.YMin, limits.YMax, 6, _yTicksBuffer);
+        else
+            _yTicksBuffer.Clear();
 
         var gridPaint = new Paint(Theme.MajorGridColor, PaintStyle.Stroke, 1.0f);
         var axisLinePaint = new Paint(Theme.AxisColor, PaintStyle.Stroke, 1.5f);
 
-        // Draw Grids
+        // Batch all X and Y gridlines into a single VectorPath
+        _gridPath.Clear();
         if (XAxis.ShowGrid)
         {
-            foreach (var t in xTicks)
+            for (int i = 0; i < _xTicksBuffer.Count; i++)
             {
-                float px = conv.GetPixelX(t.Value);
+                float px = conv.GetPixelX(_xTicksBuffer[i].Value);
                 if (px >= dims.DataLeft && px <= dims.DataRight)
                 {
-                    var line = new VectorPath();
-                    line.AddLine(px, dims.DataTop, px, dims.DataBottom);
-                    canvas.DrawPath(line, gridPaint);
+                    _gridPath.AddLine(px, dims.DataTop, px, dims.DataBottom);
                 }
             }
         }
 
         if (YAxis.ShowGrid)
         {
-            foreach (var t in yTicks)
+            for (int i = 0; i < _yTicksBuffer.Count; i++)
             {
-                float py = conv.GetPixelY(t.Value);
+                float py = conv.GetPixelY(_yTicksBuffer[i].Value);
                 if (py >= dims.DataTop && py <= dims.DataBottom)
                 {
-                    var line = new VectorPath();
-                    line.AddLine(dims.DataLeft, py, dims.DataRight, py);
-                    canvas.DrawPath(line, gridPaint);
+                    _gridPath.AddLine(dims.DataLeft, py, dims.DataRight, py);
                 }
             }
         }
 
+        if (_gridPath.VerbCount > 0)
+        {
+            canvas.DrawPath(_gridPath, gridPaint);
+        }
+
         // 4. Render Plottables (clipped to data rect)
         canvas.Save();
-        canvas.ClipPath(dataRect);
-        foreach (var p in _plottables)
+        canvas.ClipPath(_dataRectPath);
+        for (int i = 0; i < _plottables.Count; i++)
         {
-            p.Render(canvas, conv, Theme);
+            _plottables[i].Render(canvas, conv, Theme);
         }
         canvas.Restore();
 
         // 5. Draw Axis Bounding Box
-        canvas.DrawPath(dataRect, axisLinePaint);
+        canvas.DrawPath(_dataRectPath, axisLinePaint);
 
-        // 6. Draw Tick Marks & Labels
+        // 6. Draw Tick Marks (batched) & Labels
         var labelPaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
+        _tickPath.Clear();
+        float maxYTickWidth = 0f;
+
         if (XAxis.ShowTicks)
         {
-            foreach (var t in xTicks)
+            for (int i = 0; i < _xTicksBuffer.Count; i++)
             {
+                var t = _xTicksBuffer[i];
                 float px = conv.GetPixelX(t.Value);
                 if (px < dims.DataLeft - 1 || px > dims.DataRight + 1) continue;
 
-                var tickLine = new VectorPath();
-                tickLine.AddLine(px, dims.DataBottom, px, dims.DataBottom + 5f);
-                canvas.DrawPath(tickLine, axisLinePaint);
+                _tickPath.AddLine(px, dims.DataBottom, px, dims.DataBottom + 5f);
 
                 float textWidth = s_labelFont.MeasureText(t.Label);
                 canvas.DrawText(t.Label, px - textWidth * 0.5f, dims.DataBottom + 18f, s_labelFont, labelPaint);
@@ -248,18 +280,23 @@ public sealed class Figure : IDisposable
 
         if (YAxis.ShowTicks)
         {
-            foreach (var t in yTicks)
+            for (int i = 0; i < _yTicksBuffer.Count; i++)
             {
+                var t = _yTicksBuffer[i];
                 float py = conv.GetPixelY(t.Value);
                 if (py < dims.DataTop - 1 || py > dims.DataBottom + 1) continue;
 
-                var tickLine = new VectorPath();
-                tickLine.AddLine(dims.DataLeft - 5f, py, dims.DataLeft, py);
-                canvas.DrawPath(tickLine, axisLinePaint);
+                _tickPath.AddLine(dims.DataLeft - 5f, py, dims.DataLeft, py);
 
                 float textWidth = s_labelFont.MeasureText(t.Label);
+                if (textWidth > maxYTickWidth) maxYTickWidth = textWidth;
                 canvas.DrawText(t.Label, dims.DataLeft - textWidth - 8f, py + 4f, s_labelFont, labelPaint);
             }
+        }
+
+        if (_tickPath.VerbCount > 0)
+        {
+            canvas.DrawPath(_tickPath, axisLinePaint);
         }
 
         // 7. Axis Titles
@@ -283,9 +320,7 @@ public sealed class Figure : IDisposable
 
         if (!string.IsNullOrWhiteSpace(YAxis.Label))
         {
-            var axisTitlePaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
-            float yPos = dims.DataTop + dims.DataHeight * 0.5f;
-            canvas.DrawText(YAxis.Label, 12f, yPos, s_axisTitleFont, axisTitlePaint);
+            RenderYAxisTitle(canvas, dims, maxYTickWidth);
         }
 
         // 8. Legend
@@ -295,6 +330,61 @@ public sealed class Figure : IDisposable
         }
 
         canvas.Flush();
+    }
+
+    private void RenderYAxisTitle(IGraphicsCanvas canvas, PlotDimensions dims, float maxYTickWidth)
+    {
+        string labelText = YAxis.Label!;
+        var axisTitlePaint = new Paint(Theme.LabelColor, PaintStyle.Fill);
+        float yCenter = dims.DataTop + dims.DataHeight * 0.5f;
+        float tickLeft = dims.DataLeft - maxYTickWidth - 8f;
+        float xBaseline = Math.Max(14f, Math.Min(22f, tickLeft - 10f));
+
+        if (canvas is SvgGraphicsCanvas svgCanvas)
+        {
+            svgCanvas.DrawTextRotated(labelText, xBaseline, yCenter, -90f, s_axisTitleFont, axisTitlePaint);
+            return;
+        }
+
+        if (s_axisTitleFont.EffectiveTypeface is { } typeface)
+        {
+            _yAxisLabelPath.Clear();
+            float labelWidth = s_axisTitleFont.MeasureText(labelText);
+            float yStart = yCenter + labelWidth * 0.5f;
+            float scale = s_axisTitleFont.Size / typeface.UnitsPerEm;
+            float cursorOffset = 0f;
+
+            for (int i = 0; i < labelText.Length; i++)
+            {
+                int codePoint = char.IsHighSurrogate(labelText[i]) && i + 1 < labelText.Length && char.IsLowSurrogate(labelText[i + 1])
+                    ? char.ConvertToUtf32(labelText[i++], labelText[i])
+                    : labelText[i];
+
+                int glyphIdx = typeface.GetGlyphIndex(codePoint);
+                VectorPath glyphPath = typeface.GetGlyphPath(glyphIdx);
+                if (glyphPath.VerbCount > 0)
+                {
+                    var xform = new Matrix3x2(
+                        0f, -scale,
+                        -scale, 0f,
+                        xBaseline, yStart - cursorOffset);
+                    glyphPath.Transform(xform);
+                    _yAxisLabelPath.AddPath(glyphPath);
+                }
+
+                ushort adv = typeface.GetAdvanceWidth(glyphIdx);
+                cursorOffset += (adv / (float)typeface.UnitsPerEm) * s_axisTitleFont.Size;
+            }
+
+            if (_yAxisLabelPath.PointCount > 0)
+            {
+                canvas.FillPath(_yAxisLabelPath, axisTitlePaint);
+                return;
+            }
+        }
+
+        // Fallback when no TrueType outline is available: place cleanly above Y-ticks without overlap
+        canvas.DrawText(labelText, 8f, Math.Max(14f, dims.DataTop - 10f), s_axisTitleFont, axisTitlePaint);
     }
 
     public LinearFramebuffer RenderToFramebuffer(int width = 1280, int height = 720)

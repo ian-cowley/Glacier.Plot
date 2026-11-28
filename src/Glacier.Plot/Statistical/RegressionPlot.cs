@@ -10,13 +10,19 @@ using Glacier.Plot.Statistical.Kernels;
 /// <summary>
 /// Scatter plot overlay with an Ordinary Least Squares (OLS) regression line and confidence envelope.
 /// </summary>
-public sealed class RegressionPlot : IPlottable
+public sealed class RegressionPlot : IPlottable, IDisposable
 {
+    private const int ConfidenceSteps = 40;
+
     private readonly float[] _x;
     private readonly float[] _y;
     private readonly LinearRegressionResult _reg;
     private readonly float _minX;
     private readonly float _maxX;
+
+    private readonly VectorPath _scatterPath = new();
+    private readonly VectorPath _bandPath = new();
+    private readonly VectorPath _linePath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.Cyan };
@@ -60,50 +66,49 @@ public sealed class RegressionPlot : IPlottable
         // 1. Draw Scatter Points
         if (ShowScatter)
         {
-            var scatterPath = new VectorPath();
+            _scatterPath.Clear();
             for (int i = 0; i < _x.Length; i++)
             {
                 float px = converter.GetPixelX(_x[i]);
                 float py = converter.GetPixelY(_y[i]);
-                scatterPath.AddCircle(px, py, 3.5f);
+                _scatterPath.AddCircle(px, py, 3.5f);
             }
-            canvas.FillPath(scatterPath, new Paint(Style.Color.WithAlpha(160), PaintStyle.Fill));
+            canvas.FillPath(_scatterPath, new Paint(Style.Color.WithAlpha(160), PaintStyle.Fill));
         }
 
         // 2. Draw Confidence Interval Envelope
-        const int steps = 40;
-        float stepSize = (_maxX - _minX) / (steps - 1);
-        float[] evalX = new float[steps];
-        float[] upperY = new float[steps];
-        float[] lowerY = new float[steps];
-
-        for (int i = 0; i < steps; i++)
-        {
-            float curX = _minX + i * stepSize;
-            evalX[i] = curX;
-            var (lower, upper) = _reg.ConfidenceInterval(curX);
-            lowerY[i] = lower;
-            upperY[i] = upper;
-        }
-
         if (ShowConfidenceBand)
         {
-            var bandPath = new VectorPath();
-            bandPath.MoveTo(converter.GetPixelX(evalX[0]), converter.GetPixelY(upperY[0]));
+            float stepSize = (_maxX - _minX) / (ConfidenceSteps - 1);
+            Span<float> evalX = stackalloc float[ConfidenceSteps];
+            Span<float> upperY = stackalloc float[ConfidenceSteps];
+            Span<float> lowerY = stackalloc float[ConfidenceSteps];
 
-            for (int i = 1; i < steps; i++)
+            for (int i = 0; i < ConfidenceSteps; i++)
             {
-                bandPath.LineTo(converter.GetPixelX(evalX[i]), converter.GetPixelY(upperY[i]));
+                float curX = _minX + i * stepSize;
+                evalX[i] = curX;
+                var (lower, upper) = _reg.ConfidenceInterval(curX);
+                lowerY[i] = lower;
+                upperY[i] = upper;
             }
 
-            for (int i = steps - 1; i >= 0; i--)
+            _bandPath.Clear();
+            _bandPath.MoveTo(converter.GetPixelX(evalX[0]), converter.GetPixelY(upperY[0]));
+
+            for (int i = 1; i < ConfidenceSteps; i++)
             {
-                bandPath.LineTo(converter.GetPixelX(evalX[i]), converter.GetPixelY(lowerY[i]));
+                _bandPath.LineTo(converter.GetPixelX(evalX[i]), converter.GetPixelY(upperY[i]));
             }
 
-            bandPath.Close();
+            for (int i = ConfidenceSteps - 1; i >= 0; i--)
+            {
+                _bandPath.LineTo(converter.GetPixelX(evalX[i]), converter.GetPixelY(lowerY[i]));
+            }
 
-            canvas.FillPath(bandPath, new Paint(Style.Color.WithAlpha(45), PaintStyle.Fill));
+            _bandPath.Close();
+
+            canvas.FillPath(_bandPath, new Paint(Style.Color.WithAlpha(45), PaintStyle.Fill));
         }
 
         // 3. Draw Trend Line
@@ -112,8 +117,15 @@ public sealed class RegressionPlot : IPlottable
         float px2 = converter.GetPixelX(_maxX);
         float py2 = converter.GetPixelY(_reg.Predict(_maxX));
 
-        var linePath = new VectorPath();
-        linePath.AddLine(px1, py1, px2, py2);
-        canvas.DrawPath(linePath, new Paint(Style.Color, PaintStyle.Stroke, Math.Max(2.0f, Style.StrokeWidth)));
+        _linePath.Clear();
+        _linePath.AddLine(px1, py1, px2, py2);
+        canvas.DrawPath(_linePath, new Paint(Style.Color, PaintStyle.Stroke, Math.Max(2.0f, Style.StrokeWidth)));
+    }
+
+    public void Dispose()
+    {
+        _scatterPath.Clear();
+        _bandPath.Clear();
+        _linePath.Clear();
     }
 }

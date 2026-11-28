@@ -148,17 +148,19 @@ GpuPlotAccelerator.MinMaxDownsample(
 `Glacier.Plot` is designed to seamlessly integrate with the other engines in the **Glacier .NET 10 High-Performance Ecosystem**:
 
 - **[Glacier.Graphics](https://github.com/ian-cowley/Glacier.Graphics)**: Pure C# 2D vector, font, and raster engine powering `Glacier.Plot`.
-- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Columnar DataFrame engine feeding zero-copy data points to `Glacier.Plot`.
-- **[Glacier.StatsViz](https://github.com/ian-cowley/Glacier.StatsViz)**: Advanced statistical graphics grammar built on top of `Glacier.Plot`.
+- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Columnar DataFrame engine feeding zero-copy `Float32Series` data points to `Glacier.Plot`.
+- **[Glacier.Tensor](https://github.com/ian-cowley/Glacier.Tensor)**: Multi-dimensional tensor operations rendered directly via `TensorPlotExtensions`.
+- **[Glacier.Gpu](https://github.com/ian-cowley/Glacier.Gpu)**: Native CUDA PTX driver bindings (`CuDriver`, `KernelCompiler`) backing `GpuPlotAccelerator` and `GpuStatsAccelerator`.
 - **[Glacier.Desktop](https://github.com/ian-cowley/Glacier.Desktop)**: Hardware-accelerated desktop host for interactive visualizations.
 
 ---
 
-## 🆕 What's New in v1.1.0
+## 🆕 What's New in v1.2.1
 
-- **Strict Native AOT & Zero Transitive Vulnerabilities**: Upgraded to `Glacier.Graphics 1.1.0`, `Glacier.Polaris 1.1.0`, `Glacier.Tensor 1.1.0`, and `Glacier.Gpu 1.1.0` with `<IsAotCompatible>true</IsAotCompatible>` and `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
-- **Compliant Vector SVG & Lossless Heatmap Export**: Balanced `<g>` clip-path XML hierarchy in `SvgGraphicsCanvas` plus embedded base64 PNG heatmap rendering.
-- **AVX2 (`Vector256`) + AVX-512 (`Vector512`) Coordinate Transforms** alongside CUDA PTX stream-pooled GPU acceleration.
+- **Unified GPU Execution & Lifecycle (`Glacier.Plot.Core.GpuTarget`)**: Consolidated `GpuPlotAccelerator` and `GpuStatsAccelerator` onto a shared VRAM-capped CUDA context and stream pool (`CudaPlotContext`) with `KernelCompiler.NormalizePtxDirectives`, deterministic `ProcessExit` / `ReleaseGpuResources()` cleanup, and honest `PlatformNotSupportedException` on unimplemented `GpuTarget.Amd` targets.
+- **2D KDE & Vectorized Decimation**: Wired `GpuStatsAccelerator.EvaluateKde2D` / `KdeKernels.VectorizedKde2D`, vectorized `MinMaxKernels` in-register without redundant `IndexOf` rescans, and added `Vector512`/`Vector256` bucket averages and `SignalPlot` MinMax filled polygon envelopes.
+- **Lock-Free SPSC Streaming & Zero-Copy Polaris**: Hardened `StreamingLinePlot` with 128-byte cache-line `PaddedCursor` sequence-stamped snapshots, pooled `VectorPath`s across plottables/figures, zero-copy `Float32Series.Memory` interop, and `-90°` rotated Y-axis titles.
+- **Strict Native AOT & Build Hygiene**: Targets `Glacier.Graphics 1.2.1`, `Glacier.Polaris 1.2.6`, `Glacier.Tensor 1.1.2`, and `Glacier.Gpu 1.2.1` with `<IsAotCompatible>true</IsAotCompatible>` and `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 
 ---
 

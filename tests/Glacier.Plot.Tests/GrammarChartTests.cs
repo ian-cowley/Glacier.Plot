@@ -96,7 +96,7 @@ public class GrammarChartTests
         var chart = Chart.FromDataFrame(df)
             .GeomHeatmap();
 
-        string tempSvg = Path.Combine(Path.GetTempPath(), $"statsviz_test_{Path.GetRandomFileName()}.svg");
+        string tempSvg = Path.Combine(Path.GetTempPath(), $"glacier_plot_test_{Path.GetRandomFileName()}.svg");
         try
         {
             chart.RenderToSvg(tempSvg, 500, 500);
@@ -216,7 +216,7 @@ public class GrammarChartTests
         Assert.True(facetPng.Length > 100);
         Assert.Equal(0x89, facetPng[0]);
 
-        string tempSvg = Path.Combine(Path.GetTempPath(), $"statsviz_facet_{Path.GetRandomFileName()}.svg");
+        string tempSvg = Path.Combine(Path.GetTempPath(), $"glacier_plot_facet_{Path.GetRandomFileName()}.svg");
         try
         {
             facetChart.RenderToSvg(tempSvg, 600, 300);

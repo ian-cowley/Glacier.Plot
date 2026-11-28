@@ -1,10 +1,8 @@
 namespace Glacier.Plot.Decimation;
 
 using System;
-using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 
@@ -22,8 +20,8 @@ public static unsafe class MinMaxKernels
         int targetPixelWidth,
         Span<float> outX,
         Span<float> outY,
-        Glacier.Plot.Core.GpuTarget target)
-        => Glacier.Plot.Compute.GpuPlotAccelerator.MinMaxDownsample(xValues, yValues, targetPixelWidth, outX, outY, target);
+        GpuTarget target)
+        => Compute.GpuPlotAccelerator.MinMaxDownsample(xValues, yValues, targetPixelWidth, outX, outY, target);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public static int Downsample(
@@ -63,76 +61,7 @@ public static unsafe class MinMaxKernels
                 int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
                 if (start >= end) continue;
 
-                float minVal = pY[start];
-                float maxVal = pY[start];
-                int minIdx = start;
-                int maxIdx = start;
-                int bucketLen = end - start;
-
-                if (Vector256.IsHardwareAccelerated && bucketLen >= 32)
-                {
-                    var vMin = Vector256.Load(pY + start);
-                    var vMax = vMin;
-                    int i = start + 8;
-                    int limit = end - 8;
-                    for (; i <= limit; i += 8)
-                    {
-                        var v = Vector256.Load(pY + i);
-                        vMin = Vector256.Min(vMin, v);
-                        vMax = Vector256.Max(vMax, v);
-                    }
-
-                    float simdMin = float.PositiveInfinity;
-                    float simdMax = float.NegativeInfinity;
-                    for (int lane = 0; lane < 8; lane++)
-                    {
-                        float eMin = vMin.GetElement(lane);
-                        float eMax = vMax.GetElement(lane);
-                        if (eMin < simdMin) simdMin = eMin;
-                        if (eMax > simdMax) simdMax = eMax;
-                    }
-                    for (; i < end; i++)
-                    {
-                        float y = pY[i];
-                        if (y < simdMin) simdMin = y;
-                        if (y > simdMax) simdMax = y;
-                    }
-
-                    if (float.IsFinite(simdMin) && float.IsFinite(simdMax))
-                    {
-                        ReadOnlySpan<float> bucketSpan = new(pY + start, bucketLen);
-                        minVal = simdMin;
-                        maxVal = simdMax;
-                        minIdx = start + bucketSpan.IndexOf(simdMin);
-                        maxIdx = start + bucketSpan.IndexOf(simdMax);
-                    }
-                    else
-                    {
-                        for (int j = start + 1; j < end; j++)
-                        {
-                            float y = pY[j];
-                            if (y < minVal) { minVal = y; minIdx = j; }
-                            if (y > maxVal) { maxVal = y; maxIdx = j; }
-                        }
-                    }
-                }
-                else
-                {
-                    for (int i = start + 1; i < end; i++)
-                    {
-                        float y = pY[i];
-                        if (y < minVal)
-                        {
-                            minVal = y;
-                            minIdx = i;
-                        }
-                        if (y > maxVal)
-                        {
-                            maxVal = y;
-                            maxIdx = i;
-                        }
-                    }
-                }
+                FindBucketMinMax(pY, start, end, out float minVal, out float maxVal, out int minIdx, out int maxIdx);
 
                 // Preserve chronological order
                 if (minIdx <= maxIdx)
@@ -197,76 +126,7 @@ public static unsafe class MinMaxKernels
                 int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
                 if (start >= end) continue;
 
-                float minVal = pY[start];
-                float maxVal = pY[start];
-                int minIdx = start;
-                int maxIdx = start;
-                int bucketLen = end - start;
-
-                if (Vector256.IsHardwareAccelerated && bucketLen >= 32)
-                {
-                    var vMin = Vector256.Load(pY + start);
-                    var vMax = vMin;
-                    int i = start + 8;
-                    int limit = end - 8;
-                    for (; i <= limit; i += 8)
-                    {
-                        var v = Vector256.Load(pY + i);
-                        vMin = Vector256.Min(vMin, v);
-                        vMax = Vector256.Max(vMax, v);
-                    }
-
-                    float simdMin = float.PositiveInfinity;
-                    float simdMax = float.NegativeInfinity;
-                    for (int lane = 0; lane < 8; lane++)
-                    {
-                        float eMin = vMin.GetElement(lane);
-                        float eMax = vMax.GetElement(lane);
-                        if (eMin < simdMin) simdMin = eMin;
-                        if (eMax > simdMax) simdMax = eMax;
-                    }
-                    for (; i < end; i++)
-                    {
-                        float y = pY[i];
-                        if (y < simdMin) simdMin = y;
-                        if (y > simdMax) simdMax = y;
-                    }
-
-                    if (float.IsFinite(simdMin) && float.IsFinite(simdMax))
-                    {
-                        ReadOnlySpan<float> bucketSpan = new(pY + start, bucketLen);
-                        minVal = simdMin;
-                        maxVal = simdMax;
-                        minIdx = start + bucketSpan.IndexOf(simdMin);
-                        maxIdx = start + bucketSpan.IndexOf(simdMax);
-                    }
-                    else
-                    {
-                        for (int j = start + 1; j < end; j++)
-                        {
-                            float y = pY[j];
-                            if (y < minVal) { minVal = y; minIdx = j; }
-                            if (y > maxVal) { maxVal = y; maxIdx = j; }
-                        }
-                    }
-                }
-                else
-                {
-                    for (int i = start + 1; i < end; i++)
-                    {
-                        float y = pY[i];
-                        if (y < minVal)
-                        {
-                            minVal = y;
-                            minIdx = i;
-                        }
-                        if (y > maxVal)
-                        {
-                            maxVal = y;
-                            maxIdx = i;
-                        }
-                    }
-                }
+                FindBucketMinMax(pY, start, end, out float minVal, out float maxVal, out int minIdx, out int maxIdx);
 
                 if (minIdx <= maxIdx)
                 {
@@ -303,42 +163,71 @@ public static unsafe class MinMaxKernels
         int targetPixelWidth,
         in CoordinateConverter converter,
         VectorPath path)
-    {
-        if (targetPixelWidth <= 0 || xValues.Length == 0) return 0;
+        => DownsampleToPathCore(xValues, yValues, targetPixelWidth, converter, path, fillEnvelopePath: null, baselineDataY: 0.0);
 
-        int totalPoints = xValues.Length;
+    internal static int DownsampleToPath(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath strokePath,
+        VectorPath? fillEnvelopePath,
+        double baselineDataY)
+        => DownsampleToPathCore(xValues, yValues, targetPixelWidth, converter, strokePath, fillEnvelopePath, baselineDataY);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static int DownsampleToPathCore(
+        ReadOnlySpan<float> xValues,
+        ReadOnlySpan<float> yValues,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath strokePath,
+        VectorPath? fillEnvelopePath,
+        double baselineDataY)
+    {
+        if (targetPixelWidth <= 0 || xValues.Length == 0 || yValues.Length == 0) return 0;
+
+        int totalPoints = Math.Min(xValues.Length, yValues.Length);
         float bucketSize = (float)totalPoints / targetPixelWidth;
         int outCount = 0;
+        bool fillStarted = false;
 
-        for (int bucket = 0; bucket < targetPixelWidth; bucket++)
+        fixed (float* pX = xValues)
+        fixed (float* pY = yValues)
         {
-            int start = (int)(bucket * bucketSize);
-            int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
-            if (start >= end) continue;
-
-            float minVal = yValues[start];
-            float maxVal = yValues[start];
-            float minX = xValues[start];
-            float maxX = xValues[start];
-
-            for (int i = start + 1; i < end; i++)
+            for (int bucket = 0; bucket < targetPixelWidth; bucket++)
             {
-                float y = yValues[i];
-                if (y < minVal) { minVal = y; minX = xValues[i]; }
-                if (y > maxVal) { maxVal = y; maxX = xValues[i]; }
+                int start = (int)(bucket * bucketSize);
+                int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
+                if (start >= end) continue;
+
+                FindBucketMinMax(pY, start, end, out float minVal, out float maxVal, out int minIdx, out int maxIdx);
+
+                float pxMin = converter.GetPixelX(pX[minIdx]);
+                float pxMax = converter.GetPixelX(pX[maxIdx]);
+                float pyMin = converter.GetPixelY(minVal);
+                float pyMax = converter.GetPixelY(maxVal);
+
+                // Emit as a vertical segment within this pixel column.
+                float bucketPx = (pxMin + pxMax) * 0.5f;
+                strokePath.MoveTo(bucketPx, pyMax);
+                strokePath.LineTo(bucketPx, pyMin);
+                outCount += 2;
+
+                if (fillEnvelopePath != null)
+                {
+                    float envPy = maxVal >= baselineDataY ? pyMax : pyMin;
+                    if (!fillStarted)
+                    {
+                        fillEnvelopePath.MoveTo(bucketPx, envPy);
+                        fillStarted = true;
+                    }
+                    else
+                    {
+                        fillEnvelopePath.LineTo(bucketPx, envPy);
+                    }
+                }
             }
-
-            float pxMin = converter.GetPixelX(minX);
-            float pxMax = converter.GetPixelX(maxX);
-            float pyMin = converter.GetPixelY(minVal);
-            float pyMax = converter.GetPixelY(maxVal);
-
-            // Emit as a vertical segment within this pixel column.
-            // Use the average x pixel to keep it in the bucket's column.
-            float bucketPx = (pxMin + pxMax) * 0.5f;
-            path.MoveTo(bucketPx, pyMax);
-            path.LineTo(bucketPx, pyMin);
-            outCount += 2;
         }
 
         return outCount;
@@ -357,43 +246,238 @@ public static unsafe class MinMaxKernels
         int targetPixelWidth,
         in CoordinateConverter converter,
         VectorPath path)
+        => DownsampleUniformToPathCore(yValues, xStart, xStep, targetPixelWidth, converter, path, fillEnvelopePath: null, baselineDataY: 0.0);
+
+    internal static int DownsampleUniformToPath(
+        ReadOnlySpan<float> yValues,
+        float xStart,
+        float xStep,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath strokePath,
+        VectorPath? fillEnvelopePath,
+        double baselineDataY)
+        => DownsampleUniformToPathCore(yValues, xStart, xStep, targetPixelWidth, converter, strokePath, fillEnvelopePath, baselineDataY);
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static int DownsampleUniformToPathCore(
+        ReadOnlySpan<float> yValues,
+        float xStart,
+        float xStep,
+        int targetPixelWidth,
+        in CoordinateConverter converter,
+        VectorPath strokePath,
+        VectorPath? fillEnvelopePath,
+        double baselineDataY)
     {
         if (targetPixelWidth <= 0 || yValues.Length == 0) return 0;
 
         int totalPoints = yValues.Length;
         float bucketSize = (float)totalPoints / targetPixelWidth;
         int outCount = 0;
+        bool fillStarted = false;
 
-        for (int bucket = 0; bucket < targetPixelWidth; bucket++)
+        fixed (float* pY = yValues)
         {
-            int start = (int)(bucket * bucketSize);
-            int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
-            if (start >= end) continue;
-
-            float minVal = yValues[start];
-            float maxVal = yValues[start];
-            int minIdx = start;
-            int maxIdx = start;
-
-            for (int i = start + 1; i < end; i++)
+            for (int bucket = 0; bucket < targetPixelWidth; bucket++)
             {
-                float y = yValues[i];
-                if (y < minVal) { minVal = y; minIdx = i; }
-                if (y > maxVal) { maxVal = y; maxIdx = i; }
+                int start = (int)(bucket * bucketSize);
+                int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
+                if (start >= end) continue;
+
+                FindBucketMinMax(pY, start, end, out float minVal, out float maxVal, out int minIdx, out int maxIdx);
+
+                float bucketCenterX = xStart + ((minIdx + maxIdx) * 0.5f) * xStep;
+                float bucketPx = converter.GetPixelX(bucketCenterX);
+                float pyMin = converter.GetPixelY(minVal);
+                float pyMax = converter.GetPixelY(maxVal);
+
+                strokePath.MoveTo(bucketPx, pyMax);
+                strokePath.LineTo(bucketPx, pyMin);
+                outCount += 2;
+
+                if (fillEnvelopePath != null)
+                {
+                    float envPy = maxVal >= baselineDataY ? pyMax : pyMin;
+                    if (!fillStarted)
+                    {
+                        fillEnvelopePath.MoveTo(bucketPx, envPy);
+                        fillStarted = true;
+                    }
+                    else
+                    {
+                        fillEnvelopePath.LineTo(bucketPx, envPy);
+                    }
+                }
             }
-
-            // Use the bucket's center x pixel for the vertical segment.
-            float bucketCenterX = xStart + ((minIdx + maxIdx) * 0.5f) * xStep;
-            float bucketPx = converter.GetPixelX(bucketCenterX);
-            float pyMin = converter.GetPixelY(minVal);
-            float pyMax = converter.GetPixelY(maxVal);
-
-            path.MoveTo(bucketPx, pyMax);
-            path.LineTo(bucketPx, pyMin);
-            outCount += 2;
         }
 
         return outCount;
     }
-}
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void FindBucketMinMax(
+        float* pY,
+        int start,
+        int end,
+        out float minVal,
+        out float maxVal,
+        out int minIdx,
+        out int maxIdx)
+    {
+        float first = pY[start];
+        if (float.IsNaN(first))
+        {
+            minVal = first;
+            maxVal = first;
+            minIdx = start;
+            maxIdx = start;
+            return;
+        }
+
+        int bucketLen = end - start;
+        int i = start;
+
+        if (Vector512.IsHardwareAccelerated && bucketLen >= 32)
+        {
+            var vFirst = Vector512.Create(first);
+            var vStartIdx = Vector512.Create(start);
+            var v0 = Vector512.Load(pY + start);
+            var vValid0 = Vector512.Equals(v0, v0);
+            var vMin = Vector512.ConditionalSelect(vValid0, v0, vFirst);
+            var vMax = vMin;
+            var vInitIdx = vStartIdx + Vector512.Create(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+            var vMinIdx = Vector512.ConditionalSelect(vValid0.AsInt32(), vInitIdx, vStartIdx);
+            var vMaxIdx = vMinIdx;
+            var vStep = Vector512.Create(16);
+            var vCurIdx = vInitIdx + vStep;
+
+            i = start + 16;
+            int limit = end - 16;
+            for (; i <= limit; i += 16)
+            {
+                var v = Vector512.Load(pY + i);
+                var lt = Vector512.LessThan(v, vMin);
+                vMin = Vector512.ConditionalSelect(lt, v, vMin);
+                vMinIdx = Vector512.ConditionalSelect(lt.AsInt32(), vCurIdx, vMinIdx);
+
+                var gt = Vector512.GreaterThan(v, vMax);
+                vMax = Vector512.ConditionalSelect(gt, v, vMax);
+                vMaxIdx = Vector512.ConditionalSelect(gt.AsInt32(), vCurIdx, vMaxIdx);
+
+                vCurIdx += vStep;
+            }
+
+            float* pMinVals = stackalloc float[16];
+            float* pMaxVals = stackalloc float[16];
+            int* pMinIndices = stackalloc int[16];
+            int* pMaxIndices = stackalloc int[16];
+            vMin.Store(pMinVals);
+            vMax.Store(pMaxVals);
+            vMinIdx.Store(pMinIndices);
+            vMaxIdx.Store(pMaxIndices);
+
+            minVal = pMinVals[0];
+            minIdx = pMinIndices[0];
+            maxVal = pMaxVals[0];
+            maxIdx = pMaxIndices[0];
+
+            for (int lane = 1; lane < 16; lane++)
+            {
+                float cMin = pMinVals[lane];
+                int cMinIdx = pMinIndices[lane];
+                if (cMin < minVal || (cMin == minVal && cMinIdx < minIdx))
+                {
+                    minVal = cMin;
+                    minIdx = cMinIdx;
+                }
+
+                float cMax = pMaxVals[lane];
+                int cMaxIdx = pMaxIndices[lane];
+                if (cMax > maxVal || (cMax == maxVal && cMaxIdx < maxIdx))
+                {
+                    maxVal = cMax;
+                    maxIdx = cMaxIdx;
+                }
+            }
+        }
+        else if (Vector256.IsHardwareAccelerated && bucketLen >= 16)
+        {
+            var vFirst = Vector256.Create(first);
+            var vStartIdx = Vector256.Create(start);
+            var v0 = Vector256.Load(pY + start);
+            var vValid0 = Vector256.Equals(v0, v0);
+            var vMin = Vector256.ConditionalSelect(vValid0, v0, vFirst);
+            var vMax = vMin;
+            var vInitIdx = vStartIdx + Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+            var vMinIdx = Vector256.ConditionalSelect(vValid0.AsInt32(), vInitIdx, vStartIdx);
+            var vMaxIdx = vMinIdx;
+            var vStep = Vector256.Create(8);
+            var vCurIdx = vInitIdx + vStep;
+
+            i = start + 8;
+            int limit = end - 8;
+            for (; i <= limit; i += 8)
+            {
+                var v = Vector256.Load(pY + i);
+                var lt = Vector256.LessThan(v, vMin);
+                vMin = Vector256.ConditionalSelect(lt, v, vMin);
+                vMinIdx = Vector256.ConditionalSelect(lt.AsInt32(), vCurIdx, vMinIdx);
+
+                var gt = Vector256.GreaterThan(v, vMax);
+                vMax = Vector256.ConditionalSelect(gt, v, vMax);
+                vMaxIdx = Vector256.ConditionalSelect(gt.AsInt32(), vCurIdx, vMaxIdx);
+
+                vCurIdx += vStep;
+            }
+
+            float* pMinVals = stackalloc float[8];
+            float* pMaxVals = stackalloc float[8];
+            int* pMinIndices = stackalloc int[8];
+            int* pMaxIndices = stackalloc int[8];
+            vMin.Store(pMinVals);
+            vMax.Store(pMaxVals);
+            vMinIdx.Store(pMinIndices);
+            vMaxIdx.Store(pMaxIndices);
+
+            minVal = pMinVals[0];
+            minIdx = pMinIndices[0];
+            maxVal = pMaxVals[0];
+            maxIdx = pMaxIndices[0];
+
+            for (int lane = 1; lane < 8; lane++)
+            {
+                float cMin = pMinVals[lane];
+                int cMinIdx = pMinIndices[lane];
+                if (cMin < minVal || (cMin == minVal && cMinIdx < minIdx))
+                {
+                    minVal = cMin;
+                    minIdx = cMinIdx;
+                }
+
+                float cMax = pMaxVals[lane];
+                int cMaxIdx = pMaxIndices[lane];
+                if (cMax > maxVal || (cMax == maxVal && cMaxIdx < maxIdx))
+                {
+                    maxVal = cMax;
+                    maxIdx = cMaxIdx;
+                }
+            }
+        }
+        else
+        {
+            minVal = pY[start];
+            maxVal = pY[start];
+            minIdx = start;
+            maxIdx = start;
+            i = start + 1;
+        }
+
+        for (; i < end; i++)
+        {
+            float y = pY[i];
+            if (y < minVal) { minVal = y; minIdx = i; }
+            if (y > maxVal) { maxVal = y; maxIdx = i; }
+        }
+    }
+}

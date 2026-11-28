@@ -8,12 +8,13 @@ using Glacier.Plot.Core;
 /// <summary>
 /// Bar chart plottable supporting numeric positions or categorical series.
 /// </summary>
-public sealed class BarPlot : IPlottable
+public sealed class BarPlot : IPlottable, IDisposable
 {
     private readonly float[] _positions;
     private readonly float[] _values;
     private readonly string[]? _categoryLabels;
     private readonly float _barWidth;
+    private readonly VectorPath _rectPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.SteelBlue };
@@ -85,10 +86,15 @@ public sealed class BarPlot : IPlottable
             float top = Math.Min(pyVal, baselinePy);
             float bottom = Math.Max(pyVal, baselinePy);
 
-            var rectPath = new VectorPath();
-            rectPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
-            canvas.FillPath(rectPath, fillPaint);
-            canvas.DrawPath(rectPath, strokePaint);
+            _rectPath.Clear();
+            _rectPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
+            canvas.FillPath(_rectPath, fillPaint);
+            canvas.DrawPath(_rectPath, strokePaint);
         }
+    }
+
+    public void Dispose()
+    {
+        _rectPath.Clear();
     }
 }

@@ -2,6 +2,7 @@ namespace Glacier.Plot.Tests;
 
 using Glacier.Plot.Figures;
 using Glacier.Plot.Interop;
+using Glacier.Plot.Statistical.Kernels;
 using Glacier.Polaris;
 using Glacier.Polaris.Data;
 using Glacier.Tensor.Core;
@@ -26,6 +27,32 @@ public class InteropTests
         Assert.NotNull(png);
         Assert.True(png.Length > 200);
         Assert.Equal(0x89, png[0]);
+    }
+
+    [Fact]
+    public void Polaris_Float32Series_ScatterAndHistogram_RenderCleanly()
+    {
+        var x = new Float32Series("X", 64);
+        var y = new Float32Series("Y", 64);
+        for (int i = 0; i < 64; i++)
+        {
+            x.Memory.Span[i] = i * 0.25f;
+            y.Memory.Span[i] = i * 0.5f + (i % 5);
+        }
+
+        var df = new DataFrame([x, y]);
+        using var scatterFig = df.PlotScatter("X", "Y", "Polaris Scatter");
+        byte[] scatterPng = scatterFig.RenderToBytes(400, 300);
+        Assert.Equal(0x89, scatterPng[0]);
+
+        using var histFig = df.PlotHistogram("Y", bins: 10, "Polaris Histogram");
+        byte[] histPng = histFig.RenderToBytes(400, 300);
+        Assert.Equal(0x89, histPng[0]);
+
+        var (matrix, names) = CorrelationKernels.ComputeCorrelationMatrix(df);
+        Assert.Equal(2, names.Length);
+        Assert.Equal(1.0f, matrix[0], 3);
+        Assert.True(matrix[1] > 0.9f);
     }
 
     [Fact]

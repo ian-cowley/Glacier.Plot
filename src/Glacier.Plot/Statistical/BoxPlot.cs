@@ -10,11 +10,16 @@ using Glacier.Plot.Statistical.Kernels;
 /// <summary>
 /// Classical Tukey box-and-whisker plot displaying medians, IQR boxes, whiskers, and outliers.
 /// </summary>
-public sealed class BoxPlot : IPlottable
+public sealed class BoxPlot : IPlottable, IDisposable
 {
     private readonly float _centerX;
     private readonly float _boxWidth;
     private readonly SummaryStats _stats;
+
+    private readonly VectorPath _whiskerPath = new();
+    private readonly VectorPath _boxPath = new();
+    private readonly VectorPath _medianPath = new();
+    private readonly VectorPath _outlierPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.SteelBlue, FillAlpha = 180 };
@@ -56,39 +61,47 @@ public sealed class BoxPlot : IPlottable
         var fillPaint = new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill);
 
         // 1. Whisker lines
-        var whiskerPath = new VectorPath();
-        whiskerPath.AddLine(pxCenter, pyQ3, pxCenter, pyHighWhisker);
-        whiskerPath.AddLine(pxCenter, pyQ1, pxCenter, pyLowWhisker);
+        _whiskerPath.Clear();
+        _whiskerPath.AddLine(pxCenter, pyQ3, pxCenter, pyHighWhisker);
+        _whiskerPath.AddLine(pxCenter, pyQ1, pxCenter, pyLowWhisker);
 
         // Whisker crossbar caps
         float capHalfWidth = (pxRight - pxLeft) * 0.25f;
-        whiskerPath.AddLine(pxCenter - capHalfWidth, pyHighWhisker, pxCenter + capHalfWidth, pyHighWhisker);
-        whiskerPath.AddLine(pxCenter - capHalfWidth, pyLowWhisker, pxCenter + capHalfWidth, pyLowWhisker);
-        canvas.DrawPath(whiskerPath, strokePaint);
+        _whiskerPath.AddLine(pxCenter - capHalfWidth, pyHighWhisker, pxCenter + capHalfWidth, pyHighWhisker);
+        _whiskerPath.AddLine(pxCenter - capHalfWidth, pyLowWhisker, pxCenter + capHalfWidth, pyLowWhisker);
+        canvas.DrawPath(_whiskerPath, strokePaint);
 
         // 2. IQR Box
         float top = Math.Min(pyQ1, pyQ3);
         float bottom = Math.Max(pyQ1, pyQ3);
-        var boxPath = new VectorPath();
-        boxPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
-        canvas.FillPath(boxPath, fillPaint);
-        canvas.DrawPath(boxPath, strokePaint);
+        _boxPath.Clear();
+        _boxPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
+        canvas.FillPath(_boxPath, fillPaint);
+        canvas.DrawPath(_boxPath, strokePaint);
 
         // 3. Median Line
-        var medianPath = new VectorPath();
-        medianPath.AddLine(pxLeft, pyMedian, pxRight, pyMedian);
-        canvas.DrawPath(medianPath, new Paint(Colors.White, PaintStyle.Stroke, 2.5f));
+        _medianPath.Clear();
+        _medianPath.AddLine(pxLeft, pyMedian, pxRight, pyMedian);
+        canvas.DrawPath(_medianPath, new Paint(Colors.White, PaintStyle.Stroke, 2.5f));
 
         // 4. Outlier points
         if (ShowOutliers && _stats.Outliers.Length > 0)
         {
-            var outlierPath = new VectorPath();
+            _outlierPath.Clear();
             foreach (var outVal in _stats.Outliers)
             {
                 float pyOut = converter.GetPixelY(outVal);
-                outlierPath.AddCircle(pxCenter, pyOut, 3.5f);
+                _outlierPath.AddCircle(pxCenter, pyOut, 3.5f);
             }
-            canvas.FillPath(outlierPath, new Paint(Colors.Crimson, PaintStyle.Fill));
+            canvas.FillPath(_outlierPath, new Paint(Colors.Crimson, PaintStyle.Fill));
         }
+    }
+
+    public void Dispose()
+    {
+        _whiskerPath.Clear();
+        _boxPath.Clear();
+        _medianPath.Clear();
+        _outlierPath.Clear();
     }
 }

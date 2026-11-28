@@ -62,10 +62,30 @@ public static class CorrelationKernels
         return matrix;
     }
 
+    public static float[] CorrelationMatrix(IReadOnlyList<ReadOnlyMemory<float>> columns)
+    {
+        int p = columns.Count;
+        float[] matrix = new float[p * p];
+
+        for (int i = 0; i < p; i++)
+        {
+            matrix[i * p + i] = 1.0f;
+            var spanI = columns[i].Span;
+            for (int j = i + 1; j < p; j++)
+            {
+                float r = PearsonCorrelation(spanI, columns[j].Span);
+                matrix[i * p + j] = r;
+                matrix[j * p + i] = r;
+            }
+        }
+
+        return matrix;
+    }
+
     public static (float[] Matrix, string[] Names) ComputeCorrelationMatrix(DataFrame df, IReadOnlyList<string>? columnNames = null)
     {
         var names = new List<string>();
-        var cols = new List<float[]>();
+        var cols = new List<ReadOnlyMemory<float>>();
 
         var targets = columnNames ?? df.Columns.Select(c => c.Name).ToList();
         foreach (var name in targets)
@@ -74,7 +94,7 @@ public static class CorrelationKernels
             if (series is Float32Series f32)
             {
                 names.Add(name);
-                cols.Add(f32.Memory.ToArray());
+                cols.Add(f32.Memory); // zero-copy ReadOnlyMemory<float>
             }
             else if (series is Float64Series f64)
             {

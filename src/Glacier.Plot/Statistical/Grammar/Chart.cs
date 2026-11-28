@@ -95,9 +95,10 @@ public sealed class Chart
 
         string groupCol = _colorCol ?? _xCol;
         var catSeries = _df.GetColumn(groupCol);
-        float[] yVals = _df.GetColumn(_yCol).ToFloatArray();
+        var yMem = _df.GetColumn(_yCol).AsFloatMemory();
+        var ySpan = yMem.Span;
 
-        var groups = GroupByCategories(catSeries, yVals);
+        var groups = GroupByCategories(catSeries, ySpan);
         int categoryIndex = 0;
 
         foreach (var (catName, samples) in groups)
@@ -126,9 +127,10 @@ public sealed class Chart
 
         string groupCol = _colorCol ?? _xCol;
         var catSeries = _df.GetColumn(groupCol);
-        float[] yVals = _df.GetColumn(_yCol).ToFloatArray();
+        var yMem = _df.GetColumn(_yCol).AsFloatMemory();
+        var ySpan = yMem.Span;
 
-        var groups = GroupByCategories(catSeries, yVals);
+        var groups = GroupByCategories(catSeries, ySpan);
         int categoryIndex = 0;
 
         foreach (var (catName, samples) in groups)
@@ -154,10 +156,11 @@ public sealed class Chart
 
         _facetActions.Add(c => c.GeomKde(bandwidth, fill));
 
-        float[] vals = _df.GetColumn(_xCol).ToFloatArray();
+        var vals = _df.GetColumn(_xCol).AsFloatMemory();
+        var valsSpan = vals.Span;
         if (_colorCol != null)
         {
-            var groups = GroupByCategories(_df.GetColumn(_colorCol), vals);
+            var groups = GroupByCategories(_df.GetColumn(_colorCol), valsSpan);
             int idx = 0;
             foreach (var (catName, catSamples) in groups)
             {
@@ -169,7 +172,7 @@ public sealed class Chart
         else
         {
             var style = new PlotStyle { Color = Colors.Cyan, IsFilled = fill, FillAlpha = 90 };
-            AddLayer(new KdePlot(vals, 200, bandwidth, style) { Label = _xCol });
+            AddLayer(new KdePlot(valsSpan, 200, bandwidth, style) { Label = _xCol });
         }
 
         _figure.YAxis.Label = "Density";
@@ -183,12 +186,14 @@ public sealed class Chart
 
         _facetActions.Add(c => c.GeomScatter(alpha));
 
-        float[] x = _df.GetColumn(_xCol).ToFloatArray();
-        float[] y = _df.GetColumn(_yCol).ToFloatArray();
+        var xMem = _df.GetColumn(_xCol).AsFloatMemory();
+        var yMem = _df.GetColumn(_yCol).AsFloatMemory();
+        var x = xMem.Span;
+        var y = yMem.Span;
         byte alphaByte = (byte)Math.Clamp((int)MathF.Round(alpha * 255f), 1, 255);
 
-        float[]? rawSizes = _sizeCol != null ? _df.GetColumn(_sizeCol).ToFloatArray() : null;
-        float[]? normalizedRadii = rawSizes != null ? NormalizeRadii(rawSizes, minRadius: 3.0f, maxRadius: 11.0f) : null;
+        ReadOnlyMemory<float>? rawSizes = _sizeCol != null ? (ReadOnlyMemory<float>?)_df.GetColumn(_sizeCol).AsFloatMemory() : null;
+        float[]? normalizedRadii = rawSizes.HasValue ? NormalizeRadii(rawSizes.Value.Span, minRadius: 3.0f, maxRadius: 11.0f) : null;
 
         if (_colorCol != null)
         {
@@ -223,12 +228,12 @@ public sealed class Chart
         else if (normalizedRadii != null)
         {
             Rgba32 color = Colors.Amber.WithAlpha(alphaByte);
-            AddLayer(new BubbleScatterPlottable(x, y, normalizedRadii, color, $"{_yCol} vs {_xCol}"));
+            AddLayer(new BubbleScatterPlottable(xMem, yMem, normalizedRadii, color, $"{_yCol} vs {_xCol}"));
         }
         else
         {
             var style = new PlotStyle { Color = Colors.Amber.WithAlpha(alphaByte), Marker = MarkerShape.Circle, MarkerSize = 6.0f };
-            AddLayer(new ScatterPlot(x, y, style) { Label = $"{_yCol} vs {_xCol}" });
+            AddLayer(new ScatterPlot(xMem, yMem, style) { Label = $"{_yCol} vs {_xCol}" });
         }
 
         return this;
@@ -241,12 +246,13 @@ public sealed class Chart
 
         _facetActions.Add(c => c.GeomHistogram(bins, density));
 
-        float[] vals = _df.GetColumn(_xCol).ToFloatArray();
+        var vals = _df.GetColumn(_xCol).AsFloatMemory();
+        var valsSpan = vals.Span;
         var histType = density ? HistogramType.Density : HistogramType.Count;
 
         if (_colorCol != null)
         {
-            var groups = GroupByCategories(_df.GetColumn(_colorCol), vals);
+            var groups = GroupByCategories(_df.GetColumn(_colorCol), valsSpan);
             int idx = 0;
             foreach (var (catName, catSamples) in groups)
             {
@@ -258,7 +264,7 @@ public sealed class Chart
         else
         {
             var style = new PlotStyle { Color = Colors.Emerald, IsFilled = true, FillAlpha = 180 };
-            AddLayer(new HistogramPlot(vals, bins, histType, style) { Label = _xCol });
+            AddLayer(new HistogramPlot(valsSpan, bins, histType, style) { Label = _xCol });
         }
 
         _figure.YAxis.Label = density ? "Density" : "Count";
@@ -286,8 +292,8 @@ public sealed class Chart
 
         _facetActions.Add(c => c.AddRegressionTrend(showConfidenceBand));
 
-        float[] x = _df.GetColumn(_xCol).ToFloatArray();
-        float[] y = _df.GetColumn(_yCol).ToFloatArray();
+        var x = _df.GetColumn(_xCol).AsFloatMemory().Span;
+        var y = _df.GetColumn(_yCol).AsFloatMemory().Span;
         if (x.Length < 2) return this;
 
         var style = new PlotStyle { Color = Colors.Cyan, StrokeWidth = 2.5f };
@@ -502,7 +508,7 @@ public sealed class Chart
         return col.Get(index)?.ToString() ?? "Unknown";
     }
 
-    private static float[] NormalizeRadii(float[] values, float minRadius, float maxRadius)
+    private static float[] NormalizeRadii(ReadOnlySpan<float> values, float minRadius, float maxRadius)
     {
         float[] radii = new float[values.Length];
         if (values.Length == 0) return radii;
@@ -547,7 +553,7 @@ public sealed class Chart
         return map;
     }
 
-    private static Dictionary<string, float[]> GroupByCategories(ISeries catCol, float[] yVals)
+    private static Dictionary<string, float[]> GroupByCategories(ISeries catCol, ReadOnlySpan<float> yVals)
     {
         int len = catCol.Length;
         if (catCol is CategoricalSeries catSeries)
@@ -622,17 +628,20 @@ public sealed class Chart
         return result;
     }
 
-    private sealed class BubbleScatterPlottable : IPlottable
+    private sealed class BubbleScatterPlottable : IPlottable, IDisposable
     {
-        private readonly float[] _x;
-        private readonly float[] _y;
+        private readonly ReadOnlyMemory<float> _x;
+        private readonly ReadOnlyMemory<float> _y;
         private readonly float[] _radii;
+        private readonly VectorPath _path = new();
 
         public string? Label { get; set; }
         public PlotStyle Style { get; set; }
 
-        public BubbleScatterPlottable(float[] x, float[] y, float[] radii, Rgba32 color, string? label)
+        public BubbleScatterPlottable(ReadOnlyMemory<float> x, ReadOnlyMemory<float> y, float[] radii, Rgba32 color, string? label)
         {
+            if (x.Length != y.Length || x.Length != radii.Length)
+                throw new ArgumentException("X, Y, and radii lengths must match.");
             _x = x;
             _y = y;
             _radii = radii;
@@ -642,22 +651,29 @@ public sealed class Chart
 
         public AxisLimits GetLimits() => _x.Length == 0
             ? AxisLimits.Default
-            : AxisLimits.FromData(_x, _y).WithPadding(0.08, 0.08);
+            : AxisLimits.FromData(_x.Span, _y.Span).WithPadding(0.08, 0.08);
 
         public void Render(IGraphicsCanvas canvas, CoordinateConverter converter, PlotTheme theme)
         {
             if (_x.Length == 0) return;
 
-            var path = new VectorPath();
-            for (int i = 0; i < _x.Length; i++)
+            var xSpan = _x.Span;
+            var ySpan = _y.Span;
+            _path.Clear();
+            for (int i = 0; i < xSpan.Length; i++)
             {
-                float px = converter.GetPixelX(_x[i]);
-                float py = converter.GetPixelY(_y[i]);
-                path.AddCircle(px, py, _radii[i]);
+                float px = converter.GetPixelX(xSpan[i]);
+                float py = converter.GetPixelY(ySpan[i]);
+                _path.AddCircle(px, py, _radii[i]);
             }
 
-            canvas.FillPath(path, new Paint(Style.Color, PaintStyle.Fill));
-            canvas.DrawPath(path, new Paint(Style.Color.WithAlpha(255), PaintStyle.Stroke, 1.0f));
+            canvas.FillPath(_path, new Paint(Style.Color, PaintStyle.Fill));
+            canvas.DrawPath(_path, new Paint(Style.Color.WithAlpha(255), PaintStyle.Stroke, 1.0f));
+        }
+
+        public void Dispose()
+        {
+            _path.Clear();
         }
     }
 }

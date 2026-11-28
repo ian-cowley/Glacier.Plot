@@ -1,114 +1,38 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
-using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Glacier.Gpu.Drivers;
 using Glacier.Plot.Core;
+using Glacier.Plot.Decimation;
 
 namespace Glacier.Plot.Compute;
 
 /// <summary>
-/// Bare-metal hardware GPU accelerator for Glacier.Plot decimation and coordinate transforms.
-/// Delivers sub-millisecond decimation and rendering on 10M+ points via NVIDIA RTX 4060 / AMD Radeon 890M.
+/// Hardware GPU and SIMD CPU accelerator for Glacier.Plot decimation and coordinate transforms.
+/// Executes CUDA PTX compute kernels via <see cref="CudaPlotContext"/> on NVIDIA GPUs
+/// and multi-core AVX-512 / AVX2 SIMD kernels on CPU hosts.
 /// </summary>
 public static unsafe class GpuPlotAccelerator
 {
-    private static readonly Lock s_initLock = new();
-    private static bool s_nvidiaInitialized;
-    private static bool s_nvidiaAvailable;
-    private static IntPtr s_cuContext;
-    private static IntPtr s_cuModule;
-
-    private static IntPtr s_fnMinMax;
-    private static IntPtr s_fnTransformCoords;
-    private static IntPtr s_fnBucketAvgs;
-
     /// <summary>Gets whether NVIDIA CUDA PTX hardware acceleration is initialized and available.</summary>
-    public static bool IsNvidiaAvailable => EnsureNvidiaInitialized();
+    public static bool IsNvidiaAvailable => CudaPlotContext.IsNvidiaAvailable;
 
     /// <summary>
     /// Gets whether AMD HIP GPU kernel offload is available.
-    /// Currently false because embedded compute kernels use NVVM PTX; AMD/Intel/ARM hosts execute multi-core AVX-512/AVX2 SIMD kernels.
+    /// Always <see langword="false"/>; embedded compute kernels target NVVM PTX, and <see cref="GpuTarget.Amd"/> throws <see cref="PlatformNotSupportedException"/>.
     /// </summary>
     public static bool IsAmdAvailable => false;
 
     /// <summary>Gets whether bare-metal GPU kernel acceleration is available.</summary>
     public static bool IsGpuAvailable => IsNvidiaAvailable;
 
-    #region Driver Initialization
-
-    private static bool EnsureNvidiaInitialized()
-    {
-        if (s_nvidiaInitialized) return s_nvidiaAvailable;
-        lock (s_initLock)
-        {
-            if (s_nvidiaInitialized) return s_nvidiaAvailable;
-            try
-            {
-                if (!CuDriver.IsAvailable())
-                {
-                    s_nvidiaAvailable = false;
-                    s_nvidiaInitialized = true;
-                    return false;
-                }
-
-                if (CuDriver.Init(0) != 0 || CuDriver.DeviceGet(out int dev, 0) != 0)
-                {
-                    s_nvidiaAvailable = false;
-                    s_nvidiaInitialized = true;
-                    return false;
-                }
-
-                CuDriver.DeviceGetAttribute(out int major, 75, dev);
-                CuDriver.DeviceGetAttribute(out int minor, 76, dev);
-                string targetArch = $"sm_{major}{minor}";
-
-                if (CuDriver.CtxCreate(out s_cuContext, 0, dev) != 0)
-                {
-                    s_nvidiaAvailable = false;
-                    s_nvidiaInitialized = true;
-                    return false;
-                }
-
-                string ptx = GpuPlotKernels.PtxSource;
-                if (!ptx.Contains($".target {targetArch}", StringComparison.Ordinal))
-                {
-                    ptx = ptx.Replace(".target sm_89", $".target {targetArch}", StringComparison.Ordinal);
-                }
-
-                byte[] ptxBytes = Encoding.UTF8.GetBytes(ptx + "\0");
-                if (CuDriver.ModuleLoadData(out s_cuModule, ptxBytes) != 0)
-                {
-                    s_nvidiaAvailable = false;
-                    s_nvidiaInitialized = true;
-                    return false;
-                }
-
-                CuDriver.ModuleGetFunction(out s_fnMinMax, s_cuModule, "plot_minmax_decimate_fp32");
-                CuDriver.ModuleGetFunction(out s_fnTransformCoords, s_cuModule, "plot_transform_coords_fp32");
-                CuDriver.ModuleGetFunction(out s_fnBucketAvgs, s_cuModule, "plot_lttb_bucket_averages_fp32");
-
-                s_nvidiaAvailable = s_fnMinMax != IntPtr.Zero && s_fnTransformCoords != IntPtr.Zero;
-            }
-            catch
-            {
-                s_nvidiaAvailable = false;
-            }
-            finally
-            {
-                s_nvidiaInitialized = true;
-            }
-
-            return s_nvidiaAvailable;
-        }
-    }
-
-    #endregion
+    /// <summary>
+    /// Releases all pooled CUDA streams, device buffers, PTX modules, and the shared CUDA context.
+    /// Safe to call multiple times; subsequent GPU calls will re-initialize CUDA cleanly.
+    /// </summary>
+    public static void ReleaseGpuResources() => CudaPlotContext.ReleaseGpuResources();
 
     #region Min-Max Decimation
 
@@ -120,37 +44,49 @@ public static unsafe class GpuPlotAccelerator
         Span<float> outY,
         GpuTarget target = GpuTarget.Auto)
     {
+        CudaPlotContext.ValidateTarget(target);
         if (targetPixelWidth <= 0) throw new ArgumentOutOfRangeException(nameof(targetPixelWidth));
         if (xValues.Length != yValues.Length) throw new ArgumentException("X and Y length mismatch");
 
         int totalPoints = xValues.Length;
         if (totalPoints == 0) return 0;
 
-        int targetPoints = targetPixelWidth * 2;
+        int targetPoints = checked(targetPixelWidth * 2);
         if (totalPoints <= targetPoints)
         {
+            if (outX.Length < totalPoints || outY.Length < totalPoints)
+                throw new ArgumentException("Output buffers too small.");
             xValues.CopyTo(outX[..totalPoints]);
             yValues.CopyTo(outY[..totalPoints]);
             return totalPoints;
         }
 
-        bool useGpu = target switch
-        {
-            GpuTarget.Cpu => false,
-            GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && totalPoints >= 32768
-        };
+        if (outX.Length < targetPoints || outY.Length < targetPoints)
+            throw new ArgumentException("Output buffers too small.");
 
         float bucketSize = (float)totalPoints / targetPixelWidth;
 
-        if (useGpu && IsNvidiaAvailable && s_fnMinMax != IntPtr.Zero)
+        if (target == GpuTarget.Nvidia)
         {
             if (TryExecuteGpuMinMax(xValues, yValues, targetPixelWidth, outX, outY, bucketSize, totalPoints, targetPoints))
                 return targetPoints;
+
+            if (!IsNvidiaAvailable)
+            {
+                throw new PlatformNotSupportedException(
+                    "NVIDIA CUDA backend is not available on this host; use GpuTarget.Auto or GpuTarget.Cpu.");
+            }
+
+            throw new InvalidOperationException(
+                "NVIDIA CUDA execution failed for GpuPlotAccelerator.MinMaxDownsample.");
         }
 
-        // SIMD AVX-512 / AVX2 CPU Fallback
+        if (target == GpuTarget.Auto && IsNvidiaAvailable && totalPoints >= 32768 &&
+            TryExecuteGpuMinMax(xValues, yValues, targetPixelWidth, outX, outY, bucketSize, totalPoints, targetPoints))
+        {
+            return targetPoints;
+        }
+
         return MinMaxKernelsFallback(xValues, yValues, targetPixelWidth, outX, outY, bucketSize, totalPoints);
     }
 
@@ -172,17 +108,7 @@ public static unsafe class GpuPlotAccelerator
                 int end = Math.Min((int)((bucket + 1) * bucketSize), totalPoints);
                 if (start >= end) return;
 
-                float minVal = py[start];
-                float maxVal = py[start];
-                int minIdx = start;
-                int maxIdx = start;
-
-                for (int i = start + 1; i < end; i++)
-                {
-                    float y = py[i];
-                    if (y < minVal) { minVal = y; minIdx = i; }
-                    if (y > maxVal) { maxVal = y; maxIdx = i; }
-                }
+                MinMaxKernels.FindBucketMinMax(py, start, end, out float minVal, out float maxVal, out int minIdx, out int maxIdx);
 
                 int outIdx = bucket * 2;
                 if (minIdx <= maxIdx)
@@ -216,9 +142,11 @@ public static unsafe class GpuPlotAccelerator
         in CoordinateConverter converter,
         GpuTarget target = GpuTarget.Auto)
     {
+        CudaPlotContext.ValidateTarget(target);
         int n = xIn.Length;
         if (yIn.Length < n || xOut.Length < n || yOut.Length < n)
             throw new ArgumentException("Buffer lengths mismatch");
+        if (n == 0) return;
 
         float xMin = (float)converter.Limits.XMin;
         float yMin = (float)converter.Limits.YMin;
@@ -227,18 +155,25 @@ public static unsafe class GpuPlotAccelerator
         float dataLeft = converter.Dimensions.DataLeft;
         float dataBottom = converter.Dimensions.DataBottom;
 
-        bool useGpu = target switch
-        {
-            GpuTarget.Cpu => false,
-            GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && n >= 65536
-        };
-
-        if (useGpu && IsNvidiaAvailable && s_fnTransformCoords != IntPtr.Zero)
+        if (target == GpuTarget.Nvidia)
         {
             if (TryExecuteGpuTransformCoords(xIn, yIn, xOut, yOut, n, xMin, yMin, pxPerX, pxPerY, dataLeft, dataBottom))
                 return;
+
+            if (!IsNvidiaAvailable)
+            {
+                throw new PlatformNotSupportedException(
+                    "NVIDIA CUDA backend is not available on this host; use GpuTarget.Auto or GpuTarget.Cpu.");
+            }
+
+            throw new InvalidOperationException(
+                "NVIDIA CUDA execution failed for GpuPlotAccelerator.TransformCoordinates.");
+        }
+
+        if (target == GpuTarget.Auto && IsNvidiaAvailable && n >= 65536 &&
+            TryExecuteGpuTransformCoords(xIn, yIn, xOut, yOut, n, xMin, yMin, pxPerX, pxPerY, dataLeft, dataBottom))
+        {
+            return;
         }
 
         // SIMD AVX-512 / AVX2 CPU Fallback
@@ -317,27 +252,43 @@ public static unsafe class GpuPlotAccelerator
         Span<float> avgY,
         GpuTarget target = GpuTarget.Auto)
     {
+        CudaPlotContext.ValidateTarget(target);
+        if (numBuckets <= 0) throw new ArgumentOutOfRangeException(nameof(numBuckets));
+
         int totalPoints = xIn.Length;
         if (yIn.Length < totalPoints || avgX.Length < numBuckets || avgY.Length < numBuckets)
             throw new ArgumentException("Buffer lengths mismatch");
+        if (totalPoints == 0)
+        {
+            avgX[..numBuckets].Clear();
+            avgY[..numBuckets].Clear();
+            return;
+        }
 
         float bucketSize = (float)totalPoints / numBuckets;
 
-        bool useGpu = target switch
-        {
-            GpuTarget.Cpu => false,
-            GpuTarget.Nvidia => IsNvidiaAvailable,
-            GpuTarget.Amd => IsAmdAvailable,
-            _ => (IsNvidiaAvailable || IsAmdAvailable) && totalPoints >= 65536
-        };
-
-        if (useGpu && IsNvidiaAvailable && s_fnBucketAvgs != IntPtr.Zero)
+        if (target == GpuTarget.Nvidia)
         {
             if (TryExecuteGpuBucketAvgs(xIn, yIn, numBuckets, avgX, avgY, totalPoints, bucketSize))
                 return;
+
+            if (!IsNvidiaAvailable)
+            {
+                throw new PlatformNotSupportedException(
+                    "NVIDIA CUDA backend is not available on this host; use GpuTarget.Auto or GpuTarget.Cpu.");
+            }
+
+            throw new InvalidOperationException(
+                "NVIDIA CUDA execution failed for GpuPlotAccelerator.ComputeBucketAverages.");
         }
 
-        // SIMD CPU Fallback
+        if (target == GpuTarget.Auto && IsNvidiaAvailable && totalPoints >= 65536 &&
+            TryExecuteGpuBucketAvgs(xIn, yIn, numBuckets, avgX, avgY, totalPoints, bucketSize))
+        {
+            return;
+        }
+
+        // SIMD AVX-512 / AVX2 CPU Fallback with double-precision widened accumulation
         fixed (float* pX = xIn, pY = yIn, pAvgX = avgX, pAvgY = avgY)
         {
             float* px = pX; float* py = pY; float* pax = pAvgX; float* pay = pAvgY;
@@ -355,7 +306,48 @@ public static unsafe class GpuPlotAccelerator
 
                 double sumX = 0.0;
                 double sumY = 0.0;
-                for (int i = start; i < end; i++)
+                int i = start;
+
+                if (Vector512.IsHardwareAccelerated && count >= 16)
+                {
+                    var vSumX0 = Vector512<double>.Zero;
+                    var vSumX1 = Vector512<double>.Zero;
+                    var vSumY0 = Vector512<double>.Zero;
+                    var vSumY1 = Vector512<double>.Zero;
+                    int limit = end - 16;
+                    for (; i <= limit; i += 16)
+                    {
+                        var (lx, ux) = Vector512.Widen(Vector512.Load(px + i));
+                        var (ly, uy) = Vector512.Widen(Vector512.Load(py + i));
+                        vSumX0 += lx;
+                        vSumX1 += ux;
+                        vSumY0 += ly;
+                        vSumY1 += uy;
+                    }
+                    sumX += Vector512.Sum(vSumX0 + vSumX1);
+                    sumY += Vector512.Sum(vSumY0 + vSumY1);
+                }
+                else if (Vector256.IsHardwareAccelerated && count >= 8)
+                {
+                    var vSumX0 = Vector256<double>.Zero;
+                    var vSumX1 = Vector256<double>.Zero;
+                    var vSumY0 = Vector256<double>.Zero;
+                    var vSumY1 = Vector256<double>.Zero;
+                    int limit = end - 8;
+                    for (; i <= limit; i += 8)
+                    {
+                        var (lx, ux) = Vector256.Widen(Vector256.Load(px + i));
+                        var (ly, uy) = Vector256.Widen(Vector256.Load(py + i));
+                        vSumX0 += lx;
+                        vSumX1 += ux;
+                        vSumY0 += ly;
+                        vSumY1 += uy;
+                    }
+                    sumX += Vector256.Sum(vSumX0 + vSumX1);
+                    sumY += Vector256.Sum(vSumY0 + vSumY1);
+                }
+
+                for (; i < end; i++)
                 {
                     sumX += px[i];
                     sumY += py[i];
@@ -368,102 +360,7 @@ public static unsafe class GpuPlotAccelerator
 
     #endregion
 
-    #region Buffer Pooling & Execution Context
-
-    internal sealed class GpuPlotStreamSlot : IDisposable
-    {
-        private static readonly ConcurrentQueue<GpuPlotStreamSlot> s_pool = new();
-        private static int s_poolCount;
-        private const int MaxPoolSize = 64;
-
-        public IntPtr Stream { get; private set; }
-        public IntPtr dInX { get; private set; }
-        public IntPtr dInY { get; private set; }
-        public IntPtr dOutX { get; private set; }
-        public IntPtr dOutY { get; private set; }
-        public nuint capInX { get; private set; }
-        public nuint capInY { get; private set; }
-        public nuint capOutX { get; private set; }
-        public nuint capOutY { get; private set; }
-        private bool _disposed;
-
-        public GpuPlotStreamSlot()
-        {
-            int res = CuDriver.StreamCreate(out IntPtr stream, 0);
-            if (res != 0)
-            {
-                throw new InvalidOperationException($"Failed to create CUDA stream: {res}");
-            }
-            Stream = stream;
-        }
-
-        public static GpuPlotStreamSlot Rent()
-        {
-            while (s_pool.TryDequeue(out var slot))
-            {
-                Interlocked.Decrement(ref s_poolCount);
-                if (!slot._disposed) return slot;
-            }
-            return new GpuPlotStreamSlot();
-        }
-
-        public static void Return(GpuPlotStreamSlot? slot)
-        {
-            if (slot == null || slot._disposed) return;
-            if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
-            {
-                s_pool.Enqueue(slot);
-            }
-            else
-            {
-                Interlocked.Decrement(ref s_poolCount);
-                slot.Dispose();
-            }
-        }
-
-        public void EnsureCapacity(nuint reqInX, nuint reqInY, nuint reqOutX, nuint reqOutY)
-        {
-            if (reqInX > capInX)
-            {
-                if (dInX != IntPtr.Zero) CuDriver.MemFree(dInX);
-                CuDriver.MemAlloc(out IntPtr ptr, reqInX);
-                dInX = ptr;
-                capInX = reqInX;
-            }
-            if (reqInY > capInY)
-            {
-                if (dInY != IntPtr.Zero) CuDriver.MemFree(dInY);
-                CuDriver.MemAlloc(out IntPtr ptr, reqInY);
-                dInY = ptr;
-                capInY = reqInY;
-            }
-            if (reqOutX > capOutX)
-            {
-                if (dOutX != IntPtr.Zero) CuDriver.MemFree(dOutX);
-                CuDriver.MemAlloc(out IntPtr ptr, reqOutX);
-                dOutX = ptr;
-                capOutX = reqOutX;
-            }
-            if (reqOutY > capOutY)
-            {
-                if (dOutY != IntPtr.Zero) CuDriver.MemFree(dOutY);
-                CuDriver.MemAlloc(out IntPtr ptr, reqOutY);
-                dOutY = ptr;
-                capOutY = reqOutY;
-            }
-        }
-
-        public void Dispose()
-        {
-            if (_disposed) return;
-            _disposed = true;
-            if (dInX != IntPtr.Zero) { CuDriver.MemFree(dInX); dInX = IntPtr.Zero; }
-            if (dInY != IntPtr.Zero) { CuDriver.MemFree(dInY); dInY = IntPtr.Zero; }
-            if (dOutX != IntPtr.Zero) { CuDriver.MemFree(dOutX); dOutX = IntPtr.Zero; }
-            if (dOutY != IntPtr.Zero) { CuDriver.MemFree(dOutY); dOutY = IntPtr.Zero; }
-            if (Stream != IntPtr.Zero) { CuDriver.StreamDestroy(Stream); Stream = IntPtr.Zero; }
-        }
-    }
+    #region CUDA Dispatch
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool TryExecuteGpuMinMax(
@@ -476,26 +373,46 @@ public static unsafe class GpuPlotAccelerator
         int totalPoints,
         int targetPoints)
     {
+        if (!CudaPlotContext.TryEnterNvidiaExecutionReadLock())
+            return false;
+
         try
         {
-            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
-            nuint bytesOut = (nuint)(targetPoints * sizeof(float));
+            if (CudaPlotContext.MinMaxFn == IntPtr.Zero)
+                return false;
 
-            CuDriver.CtxSetCurrent(s_cuContext);
-            var slot = GpuPlotStreamSlot.Rent();
+            nuint bytesIn = CudaPlotContext.ComputeFloatBufferBytes(totalPoints);
+            nuint bytesOut = CudaPlotContext.ComputeFloatBufferBytes(targetPoints);
+
+            if (!CudaPlotContext.CheckCuda(CuDriver.CtxSetCurrent(CudaPlotContext.ContextHandle), "CtxSetCurrent"))
+                return false;
+
+            var slot = CudaPlotContext.RentSlot();
+            if (slot == null)
+                return false;
+
+            bool poison = false;
             try
             {
-                slot.EnsureCapacity(bytesIn, bytesIn, bytesOut, bytesOut);
+                if (!slot.EnsureBuffers(bytesIn, bytesIn, bytesOut, bytesOut))
+                {
+                    poison = true;
+                    return false;
+                }
 
                 fixed (float* pX = xValues, pY = yValues, pOutX = outX, pOutY = outY)
                 {
-                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pX, bytesIn, slot.Stream);
-                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pY, bytesIn, slot.Stream);
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D0, (IntPtr)pX, bytesIn, slot.Stream), "MemcpyHtoDAsync(X)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D1, (IntPtr)pY, bytesIn, slot.Stream), "MemcpyHtoDAsync(Y)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
 
-                    IntPtr dInX = slot.dInX;
-                    IntPtr dInY = slot.dInY;
-                    IntPtr dOutX = slot.dOutX;
-                    IntPtr dOutY = slot.dOutY;
+                    IntPtr dInX = slot.D0;
+                    IntPtr dInY = slot.D1;
+                    IntPtr dOutX = slot.D2;
+                    IntPtr dOutY = slot.D3;
 
                     void** pArgs = stackalloc void*[7];
                     pArgs[0] = &dInX;
@@ -507,36 +424,48 @@ public static unsafe class GpuPlotAccelerator
                     pArgs[6] = &bucketSize;
 
                     uint blockSize = 256;
-                    uint gridSize = (uint)((targetPixelWidth + blockSize - 1) / blockSize);
+                    uint gridSize = (uint)(((long)targetPixelWidth + blockSize - 1) / blockSize);
 
-                    int launchRes = CuDriver.LaunchKernel(
-                        s_fnMinMax,
-                        gridSize, 1, 1,
-                        blockSize, 1, 1,
-                        0, slot.Stream,
-                        (IntPtr)pArgs,
-                        IntPtr.Zero);
-
-                    if (launchRes == 0)
+                    if (!CudaPlotContext.CheckCuda(
+                        CuDriver.LaunchKernel(
+                            CudaPlotContext.MinMaxFn,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, slot.Stream,
+                            (IntPtr)pArgs,
+                            IntPtr.Zero),
+                        "LaunchKernel(plot_minmax_decimate_fp32)"))
                     {
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pOutX, slot.dOutX, bytesOut, slot.Stream);
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pOutY, slot.dOutY, bytesOut, slot.Stream);
-                        CuDriver.StreamSynchronize(slot.Stream);
-                        return true;
+                        poison = true;
+                        return false;
                     }
+
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pOutX, slot.D2, bytesOut, slot.Stream), "MemcpyDtoHAsync(X)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pOutY, slot.D3, bytesOut, slot.Stream), "MemcpyDtoHAsync(Y)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.StreamSynchronize(slot.Stream), "StreamSynchronize(MinMax)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
+
+                    return true;
                 }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                poison = true;
+                Trace.TraceWarning($"Glacier.Plot CUDA MinMax execution failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
             }
             finally
             {
-                GpuPlotStreamSlot.Return(slot);
+                CudaPlotContext.ReturnSlot(slot, poison);
             }
         }
-        catch
+        finally
         {
-            return false;
+            CudaPlotContext.ExitNvidiaExecutionReadLock();
         }
-
-        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -553,24 +482,44 @@ public static unsafe class GpuPlotAccelerator
         float dataLeft,
         float dataBottom)
     {
+        if (!CudaPlotContext.TryEnterNvidiaExecutionReadLock())
+            return false;
+
         try
         {
-            nuint bytes = (nuint)(n * sizeof(float));
-            CuDriver.CtxSetCurrent(s_cuContext);
-            var slot = GpuPlotStreamSlot.Rent();
+            if (CudaPlotContext.TransformCoordsFn == IntPtr.Zero)
+                return false;
+
+            nuint bytes = CudaPlotContext.ComputeFloatBufferBytes(n);
+            if (!CudaPlotContext.CheckCuda(CuDriver.CtxSetCurrent(CudaPlotContext.ContextHandle), "CtxSetCurrent"))
+                return false;
+
+            var slot = CudaPlotContext.RentSlot();
+            if (slot == null)
+                return false;
+
+            bool poison = false;
             try
             {
-                slot.EnsureCapacity(bytes, bytes, bytes, bytes);
+                if (!slot.EnsureBuffers(bytes, bytes, bytes, bytes))
+                {
+                    poison = true;
+                    return false;
+                }
 
                 fixed (float* pXIn = xIn, pYIn = yIn, pXOut = xOut, pYOut = yOut)
                 {
-                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pXIn, bytes, slot.Stream);
-                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pYIn, bytes, slot.Stream);
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D0, (IntPtr)pXIn, bytes, slot.Stream), "MemcpyHtoDAsync(XIn)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D1, (IntPtr)pYIn, bytes, slot.Stream), "MemcpyHtoDAsync(YIn)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
 
-                    IntPtr dInX = slot.dInX;
-                    IntPtr dInY = slot.dInY;
-                    IntPtr dOutX = slot.dOutX;
-                    IntPtr dOutY = slot.dOutY;
+                    IntPtr dInX = slot.D0;
+                    IntPtr dInY = slot.D1;
+                    IntPtr dOutX = slot.D2;
+                    IntPtr dOutY = slot.D3;
 
                     void** pArgs = stackalloc void*[11];
                     pArgs[0] = &dInX;
@@ -587,36 +536,48 @@ public static unsafe class GpuPlotAccelerator
 
                     uint blockSize = 256;
                     uint itemsPerBlock = blockSize * 4;
-                    uint gridSize = (uint)((n + itemsPerBlock - 1) / itemsPerBlock);
+                    uint gridSize = (uint)(((long)n + itemsPerBlock - 1) / itemsPerBlock);
 
-                    int launchRes = CuDriver.LaunchKernel(
-                        s_fnTransformCoords,
-                        gridSize, 1, 1,
-                        blockSize, 1, 1,
-                        0, slot.Stream,
-                        (IntPtr)pArgs,
-                        IntPtr.Zero);
-
-                    if (launchRes == 0)
+                    if (!CudaPlotContext.CheckCuda(
+                        CuDriver.LaunchKernel(
+                            CudaPlotContext.TransformCoordsFn,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, slot.Stream,
+                            (IntPtr)pArgs,
+                            IntPtr.Zero),
+                        "LaunchKernel(plot_transform_coords_fp32)"))
                     {
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pXOut, slot.dOutX, bytes, slot.Stream);
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pYOut, slot.dOutY, bytes, slot.Stream);
-                        CuDriver.StreamSynchronize(slot.Stream);
-                        return true;
+                        poison = true;
+                        return false;
                     }
+
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pXOut, slot.D2, bytes, slot.Stream), "MemcpyDtoHAsync(XOut)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pYOut, slot.D3, bytes, slot.Stream), "MemcpyDtoHAsync(YOut)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.StreamSynchronize(slot.Stream), "StreamSynchronize(TransformCoords)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
+
+                    return true;
                 }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                poison = true;
+                Trace.TraceWarning($"Glacier.Plot CUDA TransformCoordinates execution failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
             }
             finally
             {
-                GpuPlotStreamSlot.Return(slot);
+                CudaPlotContext.ReturnSlot(slot, poison);
             }
         }
-        catch
+        finally
         {
-            return false;
+            CudaPlotContext.ExitNvidiaExecutionReadLock();
         }
-
-        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -629,26 +590,46 @@ public static unsafe class GpuPlotAccelerator
         int totalPoints,
         float bucketSize)
     {
+        if (!CudaPlotContext.TryEnterNvidiaExecutionReadLock())
+            return false;
+
         try
         {
-            nuint bytesIn = (nuint)(totalPoints * sizeof(float));
-            nuint bytesOut = (nuint)(numBuckets * sizeof(float));
+            if (CudaPlotContext.BucketAvgsFn == IntPtr.Zero)
+                return false;
 
-            CuDriver.CtxSetCurrent(s_cuContext);
-            var slot = GpuPlotStreamSlot.Rent();
+            nuint bytesIn = CudaPlotContext.ComputeFloatBufferBytes(totalPoints);
+            nuint bytesOut = CudaPlotContext.ComputeFloatBufferBytes(numBuckets);
+
+            if (!CudaPlotContext.CheckCuda(CuDriver.CtxSetCurrent(CudaPlotContext.ContextHandle), "CtxSetCurrent"))
+                return false;
+
+            var slot = CudaPlotContext.RentSlot();
+            if (slot == null)
+                return false;
+
+            bool poison = false;
             try
             {
-                slot.EnsureCapacity(bytesIn, bytesIn, bytesOut, bytesOut);
+                if (!slot.EnsureBuffers(bytesIn, bytesIn, bytesOut, bytesOut))
+                {
+                    poison = true;
+                    return false;
+                }
 
                 fixed (float* pX = xIn, pY = yIn, pAvgX = avgX, pAvgY = avgY)
                 {
-                    CuDriver.MemcpyHtoDAsync(slot.dInX, (IntPtr)pX, bytesIn, slot.Stream);
-                    CuDriver.MemcpyHtoDAsync(slot.dInY, (IntPtr)pY, bytesIn, slot.Stream);
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D0, (IntPtr)pX, bytesIn, slot.Stream), "MemcpyHtoDAsync(X)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyHtoDAsync(slot.D1, (IntPtr)pY, bytesIn, slot.Stream), "MemcpyHtoDAsync(Y)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
 
-                    IntPtr dInX = slot.dInX;
-                    IntPtr dInY = slot.dInY;
-                    IntPtr dOutX = slot.dOutX;
-                    IntPtr dOutY = slot.dOutY;
+                    IntPtr dInX = slot.D0;
+                    IntPtr dInY = slot.D1;
+                    IntPtr dOutX = slot.D2;
+                    IntPtr dOutY = slot.D3;
 
                     void** pArgs = stackalloc void*[7];
                     pArgs[0] = &dInX;
@@ -660,36 +641,48 @@ public static unsafe class GpuPlotAccelerator
                     pArgs[6] = &bucketSize;
 
                     uint blockSize = 256;
-                    uint gridSize = (uint)((numBuckets + blockSize - 1) / blockSize);
+                    uint gridSize = (uint)(((long)numBuckets + blockSize - 1) / blockSize);
 
-                    int launchRes = CuDriver.LaunchKernel(
-                        s_fnBucketAvgs,
-                        gridSize, 1, 1,
-                        blockSize, 1, 1,
-                        0, slot.Stream,
-                        (IntPtr)pArgs,
-                        IntPtr.Zero);
-
-                    if (launchRes == 0)
+                    if (!CudaPlotContext.CheckCuda(
+                        CuDriver.LaunchKernel(
+                            CudaPlotContext.BucketAvgsFn,
+                            gridSize, 1, 1,
+                            blockSize, 1, 1,
+                            0, slot.Stream,
+                            (IntPtr)pArgs,
+                            IntPtr.Zero),
+                        "LaunchKernel(plot_lttb_bucket_averages_fp32)"))
                     {
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pAvgX, slot.dOutX, bytesOut, slot.Stream);
-                        CuDriver.MemcpyDtoHAsync((IntPtr)pAvgY, slot.dOutY, bytesOut, slot.Stream);
-                        CuDriver.StreamSynchronize(slot.Stream);
-                        return true;
+                        poison = true;
+                        return false;
                     }
+
+                    if (!CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pAvgX, slot.D2, bytesOut, slot.Stream), "MemcpyDtoHAsync(AvgX)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.MemcpyDtoHAsync((IntPtr)pAvgY, slot.D3, bytesOut, slot.Stream), "MemcpyDtoHAsync(AvgY)") ||
+                        !CudaPlotContext.CheckCuda(CuDriver.StreamSynchronize(slot.Stream), "StreamSynchronize(BucketAvgs)"))
+                    {
+                        poison = true;
+                        return false;
+                    }
+
+                    return true;
                 }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                poison = true;
+                Trace.TraceWarning($"Glacier.Plot CUDA ComputeBucketAverages execution failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
             }
             finally
             {
-                GpuPlotStreamSlot.Return(slot);
+                CudaPlotContext.ReturnSlot(slot, poison);
             }
         }
-        catch
+        finally
         {
-            return false;
+            CudaPlotContext.ExitNvidiaExecutionReadLock();
         }
-
-        return false;
     }
 
     #endregion

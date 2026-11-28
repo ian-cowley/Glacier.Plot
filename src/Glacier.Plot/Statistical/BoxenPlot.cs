@@ -6,13 +6,12 @@ using Glacier.Graphics;
 using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
 using Glacier.Plot.Plottables;
-using Glacier.Plot.Statistical.Kernels;
 
 /// <summary>
 /// Letter-value plot (boxen plot) for high-cardinality datasets, drawing successive
 /// quantile boxes at diminishing widths to visualize tail distributions.
 /// </summary>
-public sealed class BoxenPlot : IPlottable
+public sealed class BoxenPlot : IPlottable, IDisposable
 {
     private readonly float _centerX;
     private readonly float _baseWidth;
@@ -21,6 +20,9 @@ public sealed class BoxenPlot : IPlottable
     private readonly float _min;
     private readonly float _max;
     private readonly float _median;
+
+    private readonly VectorPath _boxPath = new();
+    private readonly VectorPath _medianPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.SteelBlue, FillAlpha = 180 };
@@ -62,7 +64,6 @@ public sealed class BoxenPlot : IPlottable
         _max = _sortedSamples[^1];
         _median = ComputePercentile(_sortedSamples, 0.5);
 
-        // Determine number of letter-value levels k = max(1, min(maxLevels, floor(log2(n)) - 3))
         int n = _sortedSamples.Length;
         int k = Math.Max(1, (int)Math.Floor(Math.Log2(Math.Max(8, n))) - 3);
         if (maxLevels.HasValue && maxLevels.Value > 0)
@@ -70,10 +71,6 @@ public sealed class BoxenPlot : IPlottable
             k = Math.Min(k, maxLevels.Value);
         }
 
-        // Build levels symmetrically around median:
-        // level 0: quartiles [0.25, 0.75]
-        // level 1: octiles [0.125, 0.25] and [0.75, 0.875]
-        // etc.
         float currentWidth = _baseWidth;
         double lowerP = 0.25;
         double upperP = 0.75;
@@ -85,7 +82,7 @@ public sealed class BoxenPlot : IPlottable
 
             _levels.Add(new BoxenLevel(lowVal, highVal, currentWidth));
 
-            currentWidth *= 0.75f; // Decreasing width for each successive quantile level
+            currentWidth *= 0.75f;
             lowerP /= 2.0;
             upperP = 1.0 - lowerP;
         }
@@ -131,10 +128,10 @@ public sealed class BoxenPlot : IPlottable
             float top = Math.Min(pyLow, pyHigh);
             float bottom = Math.Max(pyLow, pyHigh);
 
-            var boxPath = new VectorPath();
-            boxPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
-            canvas.FillPath(boxPath, fillPaint);
-            canvas.DrawPath(boxPath, strokePaint);
+            _boxPath.Clear();
+            _boxPath.AddRect(pxLeft, top, pxRight - pxLeft, bottom - top);
+            canvas.FillPath(_boxPath, fillPaint);
+            canvas.DrawPath(_boxPath, strokePaint);
         }
 
         // Render median line across outermost box
@@ -142,8 +139,14 @@ public sealed class BoxenPlot : IPlottable
         float pxMedianRight = converter.GetPixelX(_centerX + _baseWidth * 0.5f);
         float pyMedian = converter.GetPixelY(_median);
 
-        var medianPath = new VectorPath();
-        medianPath.AddLine(pxMedianLeft, pyMedian, pxMedianRight, pyMedian);
-        canvas.DrawPath(medianPath, new Paint(Colors.White, PaintStyle.Stroke, 2.5f));
+        _medianPath.Clear();
+        _medianPath.AddLine(pxMedianLeft, pyMedian, pxMedianRight, pyMedian);
+        canvas.DrawPath(_medianPath, new Paint(Colors.White, PaintStyle.Stroke, 2.5f));
+    }
+
+    public void Dispose()
+    {
+        _boxPath.Clear();
+        _medianPath.Clear();
     }
 }

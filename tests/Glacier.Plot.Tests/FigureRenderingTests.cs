@@ -261,5 +261,91 @@ public class FigureRenderingTests
         Assert.Equal(400, uniformCount);
         Assert.True(uniformPath.PointCount >= 400);
     }
+
+    [Fact]
+    public void SignalPlot_IsFilled_UnderMinMaxDecimation_FillsInteriorColumns()
+    {
+        const int pointCount = 60_000;
+        float[] signalY = new float[pointCount];
+        for (int i = 0; i < pointCount; i++)
+        {
+            signalY[i] = 8.0f + 2.0f * MathF.Sin(i * 0.001f);
+        }
+
+        using var fig = new Figure { Theme = PlotTheme.Dark, ShowLegend = false };
+        fig.XAxis.ShowGrid = false;
+        fig.YAxis.ShowGrid = false;
+        fig.YAxis.AutoScale = false;
+        fig.YAxis.Min = 0.0;
+        fig.YAxis.Max = 12.0;
+
+        var signal = fig.PlotSignal(signalY, xStart: 0f, xStep: 1f, color: new Rgba32(0, 200, 255, 255));
+        signal.Style.IsFilled = true;
+        signal.Style.FillAlpha = 180;
+
+        const int width = 400;
+        const int height = 240;
+        using var fb = fig.RenderToFramebuffer(width, height);
+
+        var dims = new PlotDimensions(width, height);
+        var conv = new CoordinateConverter(dims, fig.ComputeEffectiveLimits());
+        int interiorPy = (int)MathF.Round(conv.GetPixelY(5.0));
+        byte bgBlue = PlotTheme.Dark.DataBackground.B;
+        int filledColumns = 0;
+
+        foreach (int px in new[] { 120, 160, 200, 240, 280, 320 })
+        {
+            var pixel = fb.GetPixel(px, interiorPy);
+            if (pixel.B > bgBlue + 30)
+                filledColumns++;
+        }
+
+        Assert.True(filledColumns >= 5, $"Expected filled interior across >= 5/6 columns under MinMax decimation, found {filledColumns}/6.");
+    }
+
+    [Fact]
+    public void Figure_YAxisLabel_RendersRotatedWithoutOverlappingTicksOrData()
+    {
+        using var fig = new Figure { Theme = PlotTheme.Dark, ShowLegend = false };
+        fig.XAxis.Label = "Time";
+        fig.YAxis.Label = "Amplitude";
+        fig.PlotSignal([0f, 5f, 10f], label: null);
+
+        const int width = 400;
+        const int height = 300;
+        using var fb = fig.RenderToFramebuffer(width, height);
+
+        // Verify SVG export uses rotated Y-axis label
+        using var svg = new Glacier.Plot.Rendering.SvgGraphicsCanvas(width, height);
+        fig.Render(svg, width, height);
+        string svgXml = svg.ToString();
+        Assert.Contains("rotate(-90", svgXml);
+        Assert.Contains(">Amplitude<", svgXml);
+
+        // On systems with a TrueType font (Windows/Linux desktop), verify rotated pixels sit in left margin
+        // and leave the tick-gap column clear.
+        var dims = new PlotDimensions(width, height);
+        var bg = PlotTheme.Dark.FigureBackground;
+        int litLeftMarginPixels = 0;
+        int yStart = (int)dims.DataTop;
+        int yEnd = (int)dims.DataBottom;
+        for (int py = yStart; py < yEnd; py++)
+        {
+            for (int px = 4; px <= 24; px++)
+            {
+                var p = fb.GetPixel(px, py);
+                if (p.R != bg.R || p.G != bg.G || p.B != bg.B)
+                    litLeftMarginPixels++;
+            }
+        }
+        Assert.True(litLeftMarginPixels > 0, "Expected Y-axis label pixels in the left margin.");
+    }
+
+    [Fact]
+    public void GpuTarget_OnlyExistsInCoreNamespace()
+    {
+        Assert.NotNull(typeof(Figure).Assembly.GetType("Glacier.Plot.Core.GpuTarget"));
+        Assert.Null(typeof(Figure).Assembly.GetType("Glacier.Plot.Statistical.Core.GpuTarget"));
+    }
 }
 

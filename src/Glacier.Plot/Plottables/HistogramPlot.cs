@@ -15,13 +15,14 @@ public enum HistogramType
 /// <summary>
 /// Vectorized histogram frequency distribution plottable.
 /// </summary>
-public sealed class HistogramPlot : IPlottable
+public sealed class HistogramPlot : IPlottable, IDisposable
 {
     private readonly float[] _binEdges;
     private readonly float[] _binCounts;
     private readonly int _binCount;
     private readonly float _dataMin;
     private readonly float _dataMax;
+    private readonly VectorPath _rectPath = new();
 
     public string? Label { get; set; }
     public PlotStyle Style { get; set; } = new() { Color = Colors.Emerald, IsFilled = true, FillAlpha = 180 };
@@ -115,10 +116,15 @@ public sealed class HistogramPlot : IPlottable
             float top = Math.Min(py, baselinePy);
             float bottom = Math.Max(py, baselinePy);
 
-            var rectPath = new VectorPath();
-            rectPath.AddRect(px0, top, px1 - px0, bottom - top);
-            canvas.FillPath(rectPath, fillPaint);
-            canvas.DrawPath(rectPath, strokePaint);
+            _rectPath.Clear();
+            _rectPath.AddRect(px0, top, px1 - px0, bottom - top);
+            canvas.FillPath(_rectPath, fillPaint);
+            canvas.DrawPath(_rectPath, strokePaint);
         }
+    }
+
+    public void Dispose()
+    {
+        _rectPath.Clear();
     }
 }

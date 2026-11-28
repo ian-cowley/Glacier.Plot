@@ -1,6 +1,7 @@
 namespace Glacier.Plot.Plottables;
 
 using System;
+using System.Buffers;
 using Glacier.Graphics;
 using Glacier.Graphics.Vector;
 using Glacier.Plot.Core;
@@ -118,20 +119,35 @@ public sealed class SignalPlot : IPlottable, IDisposable
 
         int targetPixels = Math.Max(100, (int)Math.Ceiling(converter.Dimensions.DataWidth));
         bool shouldDecimate = Decimation != DecimationStrategy.None && _count > targetPixels * 2;
+        bool useMinMax = shouldDecimate &&
+                         (Decimation == DecimationStrategy.MinMax ||
+                          (Decimation == DecimationStrategy.Auto && _count > targetPixels * 50));
+
+        double baselineDataY = Math.Max(0.0, converter.Limits.YMin);
+        float baselinePy = converter.GetPixelY(baselineDataY);
 
         _path.Clear();
+        _fillPath.Clear();
 
         if (shouldDecimate)
         {
-            bool useMinMax = Decimation == DecimationStrategy.MinMax ||
-                             (Decimation == DecimationStrategy.Auto && _count > targetPixels * 50);
-
             if (useMinMax)
             {
+                VectorPath? fillTarget = Style.IsFilled ? _fillPath : null;
                 if (_isUniform)
-                    MinMaxKernels.DownsampleUniformToPath(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, converter, _path);
+                    MinMaxKernels.DownsampleUniformToPath(_yMemory.Span[.._count], _xStart, _xStep, targetPixels, converter, _path, fillTarget, baselineDataY);
                 else
-                    MinMaxKernels.DownsampleToPath(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, converter, _path);
+                    MinMaxKernels.DownsampleToPath(_xMemory.Span[.._count], _yMemory.Span[.._count], targetPixels, converter, _path, fillTarget, baselineDataY);
+
+                if (Style.IsFilled && _fillPath.PointCount >= 2)
+                {
+                    float firstPx = _fillPath.Points[0].X;
+                    float lastPx = _fillPath.Points[^1].X;
+                    _fillPath.LineTo(lastPx, baselinePy);
+                    _fillPath.LineTo(firstPx, baselinePy);
+                    _fillPath.Close();
+                    canvas.FillPath(_fillPath, new Paint(Style.Color.WithAlpha(Style.FillAlpha), PaintStyle.Fill));
+                }
             }
             else
             {
@@ -143,30 +159,70 @@ public sealed class SignalPlot : IPlottable, IDisposable
         }
         else
         {
-            var ySpan = _yMemory.Span;
+            var ySpan = _yMemory.Span[.._count];
             if (_isUniform)
             {
-                _path.MoveTo(converter.GetPixelX(_xStart), converter.GetPixelY(ySpan[0]));
-                for (int i = 1; i < _count; i++)
+                if (_count >= 256)
                 {
-                    _path.LineTo(converter.GetPixelX(_xStart + i * _xStep), converter.GetPixelY(ySpan[i]));
+                    float[] xData = ArrayPool<float>.Shared.Rent(_count);
+                    float[] pxBuf = ArrayPool<float>.Shared.Rent(_count);
+                    float[] pyBuf = ArrayPool<float>.Shared.Rent(_count);
+                    try
+                    {
+                        for (int i = 0; i < _count; i++) xData[i] = _xStart + i * _xStep;
+                        converter.TransformCoordinates(xData.AsSpan(0, _count), ySpan, pxBuf.AsSpan(0, _count), pyBuf.AsSpan(0, _count));
+                        _path.MoveTo(pxBuf[0], pyBuf[0]);
+                        for (int i = 1; i < _count; i++) _path.LineTo(pxBuf[i], pyBuf[i]);
+                    }
+                    finally
+                    {
+                        ArrayPool<float>.Shared.Return(xData);
+                        ArrayPool<float>.Shared.Return(pxBuf);
+                        ArrayPool<float>.Shared.Return(pyBuf);
+                    }
+                }
+                else
+                {
+                    _path.MoveTo(converter.GetPixelX(_xStart), converter.GetPixelY(ySpan[0]));
+                    for (int i = 1; i < _count; i++)
+                    {
+                        _path.LineTo(converter.GetPixelX(_xStart + i * _xStep), converter.GetPixelY(ySpan[i]));
+                    }
                 }
             }
             else
             {
-                var xSpan = _xMemory.Span;
-                _path.MoveTo(converter.GetPixelX(xSpan[0]), converter.GetPixelY(ySpan[0]));
-                for (int i = 1; i < _count; i++)
+                var xSpan = _xMemory.Span[.._count];
+                if (_count >= 256)
                 {
-                    _path.LineTo(converter.GetPixelX(xSpan[i]), converter.GetPixelY(ySpan[i]));
+                    float[] pxBuf = ArrayPool<float>.Shared.Rent(_count);
+                    float[] pyBuf = ArrayPool<float>.Shared.Rent(_count);
+                    try
+                    {
+                        converter.TransformCoordinates(xSpan, ySpan, pxBuf.AsSpan(0, _count), pyBuf.AsSpan(0, _count));
+                        _path.MoveTo(pxBuf[0], pyBuf[0]);
+                        for (int i = 1; i < _count; i++) _path.LineTo(pxBuf[i], pyBuf[i]);
+                    }
+                    finally
+                    {
+                        ArrayPool<float>.Shared.Return(pxBuf);
+                        ArrayPool<float>.Shared.Return(pyBuf);
+                    }
+                }
+                else
+                {
+                    _path.MoveTo(converter.GetPixelX(xSpan[0]), converter.GetPixelY(ySpan[0]));
+                    for (int i = 1; i < _count; i++)
+                    {
+                        _path.LineTo(converter.GetPixelX(xSpan[i]), converter.GetPixelY(ySpan[i]));
+                    }
                 }
             }
         }
 
-        // Fill under curve if enabled
-        if (Style.IsFilled && _path.PointCount >= 2)
+        // Fill under curve if enabled (non-MinMax path: contiguous polyline in _path)
+        if (Style.IsFilled && !useMinMax && _path.PointCount >= 2)
         {
-            _fillPath.Clear();
             _fillPath.AddPath(_path);
 
             float lastX = _isUniform ? _xStart + (_count - 1) * _xStep : _xMemory.Span[_count - 1];
@@ -174,7 +230,6 @@ public sealed class SignalPlot : IPlottable, IDisposable
 
             float lastPx = converter.GetPixelX(lastX);
             float firstPx = converter.GetPixelX(firstX);
-            float baselinePy = converter.GetPixelY(Math.Max(0, converter.Limits.YMin));
 
             _fillPath.LineTo(lastPx, baselinePy);
             _fillPath.LineTo(firstPx, baselinePy);

@@ -19,6 +19,7 @@ using Glacier.Graphics.Vector;
 public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 {
     private readonly StringBuilder _sb = new();
+    private readonly StringBuilder _pathBuilder = new(256);
     private readonly Stack<int> _saveGroupCounts = new();
     private int _unscopedOpenGroups;
     private int _clipIdCounter;
@@ -35,12 +36,9 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
     public void Clear(Rgba32 color)
     {
         if (color.A == 0) return;
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<rect width=\"{0}\" height=\"{1}\" fill=\"{2}\" />",
-            Width,
-            Height,
-            FormatColor(color)));
+        _sb.Append(CultureInfo.InvariantCulture, $"<rect width=\"{Width}\" height=\"{Height}\" fill=\"");
+        AppendColor(_sb, color);
+        _sb.AppendLine("\" />");
     }
 
     public void DrawPath(in VectorPath path, in Paint paint)
@@ -48,7 +46,6 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
         if (path == null || path.VerbCount == 0 || paint.Color.A == 0) return;
 
         string d = ConvertPathToSvgD(path);
-        string stroke = FormatColor(paint.Color);
         string join = paint.Join switch
         {
             StrokeJoin.Round => "round",
@@ -62,14 +59,9 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
             _ => "butt"
         };
 
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<path d=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:0.##}\" stroke-linejoin=\"{3}\" stroke-linecap=\"{4}\" />",
-            d,
-            stroke,
-            paint.StrokeWidth,
-            join,
-            cap));
+        _sb.Append(CultureInfo.InvariantCulture, $"<path d=\"{d}\" fill=\"none\" stroke=\"");
+        AppendColor(_sb, paint.Color);
+        _sb.AppendLine(CultureInfo.InvariantCulture, $"\" stroke-width=\"{paint.StrokeWidth:0.##}\" stroke-linejoin=\"{join}\" stroke-linecap=\"{cap}\" />");
     }
 
     public void FillPath(in VectorPath path, in Paint paint)
@@ -77,15 +69,11 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
         if (path == null || path.VerbCount == 0 || paint.Color.A == 0) return;
 
         string d = ConvertPathToSvgD(path);
-        string fill = FormatColor(paint.Color);
         string rule = path.FillRule == WindingRule.EvenOdd ? "evenodd" : "nonzero";
 
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<path d=\"{0}\" fill=\"{1}\" fill-rule=\"{2}\" />",
-            d,
-            fill,
-            rule));
+        _sb.Append(CultureInfo.InvariantCulture, $"<path d=\"{d}\" fill=\"");
+        AppendColor(_sb, paint.Color);
+        _sb.AppendLine($"\" fill-rule=\"{rule}\" />");
     }
 
     public void DrawText(ReadOnlySpan<char> text, float x, float y, in Font font, in Paint paint)
@@ -94,21 +82,26 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 
         string escaped = SecurityElement.Escape(text.ToString()) ?? string.Empty;
         string escapedFamily = SecurityElement.Escape(font.FamilyName) ?? "Sans-Serif";
-        string fill = FormatColor(paint.Color);
         string fontWeight = font.Bold ? "font-weight=\"bold\" " : string.Empty;
         string fontStyle = font.Italic ? "font-style=\"italic\" " : string.Empty;
 
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<text x=\"{0:0.##}\" y=\"{1:0.##}\" font-family=\"{2}\" font-size=\"{3:0.##}\" {4}{5}fill=\"{6}\">{7}</text>",
-            x,
-            y,
-            escapedFamily,
-            font.Size,
-            fontWeight,
-            fontStyle,
-            fill,
-            escaped));
+        _sb.Append(CultureInfo.InvariantCulture, $"<text x=\"{x:0.##}\" y=\"{y:0.##}\" font-family=\"{escapedFamily}\" font-size=\"{font.Size:0.##}\" {fontWeight}{fontStyle}fill=\"");
+        AppendColor(_sb, paint.Color);
+        _sb.AppendLine($"\">{escaped}</text>");
+    }
+
+    internal void DrawTextRotated(ReadOnlySpan<char> text, float x, float y, float angleDegrees, in Font font, in Paint paint)
+    {
+        if (text.IsEmpty || paint.Color.A == 0) return;
+
+        string escaped = SecurityElement.Escape(text.ToString()) ?? string.Empty;
+        string escapedFamily = SecurityElement.Escape(font.FamilyName) ?? "Sans-Serif";
+        string fontWeight = font.Bold ? "font-weight=\"bold\" " : string.Empty;
+        string fontStyle = font.Italic ? "font-style=\"italic\" " : string.Empty;
+
+        _sb.Append(CultureInfo.InvariantCulture, $"<text x=\"{x:0.##}\" y=\"{y:0.##}\" text-anchor=\"middle\" transform=\"rotate({angleDegrees:0.##} {x:0.##} {y:0.##})\" font-family=\"{escapedFamily}\" font-size=\"{font.Size:0.##}\" {fontWeight}{fontStyle}fill=\"");
+        AppendColor(_sb, paint.Color);
+        _sb.AppendLine($"\">{escaped}</text>");
     }
 
     public void DrawImage(in ReadOnlySpan2D<Rgba32> image, float x, float y, float width, float height)
@@ -124,14 +117,8 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
         byte[] pngBytes = PngEncoder.Encode(fb);
         string base64 = Convert.ToBase64String(pngBytes);
 
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<image x=\"{0:0.##}\" y=\"{1:0.##}\" width=\"{2:0.##}\" height=\"{3:0.##}\" preserveAspectRatio=\"none\" style=\"image-rendering:pixelated\" href=\"data:image/png;base64,{4}\" />",
-            x,
-            y,
-            width,
-            height,
-            base64));
+        _sb.AppendLine(CultureInfo.InvariantCulture,
+            $"<image x=\"{x:0.##}\" y=\"{y:0.##}\" width=\"{width:0.##}\" height=\"{height:0.##}\" preserveAspectRatio=\"none\" style=\"image-rendering:pixelated\" href=\"data:image/png;base64,{base64}\" />");
     }
 
     public void Save()
@@ -161,18 +148,11 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
     {
         if (path == null || path.VerbCount == 0) return;
 
-        string clipId = $"clip_{++_clipIdCounter}";
+        int id = ++_clipIdCounter;
         string d = ConvertPathToSvgD(path);
 
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<defs><clipPath id=\"{0}\"><path d=\"{1}\" /></clipPath></defs>",
-            clipId,
-            d));
-        _sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<g clip-path=\"url(#{0})\">",
-            clipId));
+        _sb.AppendLine(CultureInfo.InvariantCulture, $"<defs><clipPath id=\"clip_{id}\"><path d=\"{d}\" /></clipPath></defs>");
+        _sb.AppendLine(CultureInfo.InvariantCulture, $"<g clip-path=\"url(#clip_{id})\">");
 
         if (_saveGroupCounts.Count > 0)
         {
@@ -188,17 +168,15 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
 
     public void Dispose()
     {
+        _pathBuilder.Clear();
     }
 
     public override string ToString()
     {
-        var sb = new StringBuilder();
-        sb.AppendLine(string.Format(
-            CultureInfo.InvariantCulture,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}\" height=\"{1}\" viewBox=\"0 0 {0} {1}\">",
-            Width,
-            Height));
-        sb.Append(_sb.ToString());
+        var sb = new StringBuilder(_sb.Length + 128);
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{Width}\" height=\"{Height}\" viewBox=\"0 0 {Width} {Height}\">");
+        sb.Append(_sb);
 
         int unclosed = _unscopedOpenGroups;
         foreach (int c in _saveGroupCounts) unclosed += c;
@@ -218,19 +196,20 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
         writer.Flush();
     }
 
-    private static string FormatColor(Rgba32 c)
+    private static void AppendColor(StringBuilder sb, Rgba32 c)
     {
         if (c.A == 255)
         {
-            return $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            sb.Append(CultureInfo.InvariantCulture, $"#{c.R:X2}{c.G:X2}{c.B:X2}");
+            return;
         }
         float a = c.A / 255.0f;
-        return string.Format(CultureInfo.InvariantCulture, "rgba({0},{1},{2},{3:0.##})", c.R, c.G, c.B, a);
+        sb.Append(CultureInfo.InvariantCulture, $"rgba({c.R},{c.G},{c.B},{a:0.##})");
     }
 
-    private static string ConvertPathToSvgD(VectorPath path)
+    private string ConvertPathToSvgD(VectorPath path)
     {
-        var sb = new StringBuilder();
+        _pathBuilder.Clear();
         var verbs = path.Verbs;
         var points = path.Points;
         int ptIdx = 0;
@@ -241,29 +220,32 @@ public sealed class SvgGraphicsCanvas : IGraphicsCanvas
             {
                 case PathVerb.MoveTo:
                     var pMove = points[ptIdx++];
-                    sb.Append(string.Format(CultureInfo.InvariantCulture, "M {0:0.##} {1:0.##} ", pMove.X, pMove.Y));
+                    _pathBuilder.Append(CultureInfo.InvariantCulture, $"M {pMove.X:0.##} {pMove.Y:0.##} ");
                     break;
                 case PathVerb.LineTo:
                     var pLine = points[ptIdx++];
-                    sb.Append(string.Format(CultureInfo.InvariantCulture, "L {0:0.##} {1:0.##} ", pLine.X, pLine.Y));
+                    _pathBuilder.Append(CultureInfo.InvariantCulture, $"L {pLine.X:0.##} {pLine.Y:0.##} ");
                     break;
                 case PathVerb.QuadTo:
                     var p1Q = points[ptIdx++];
                     var p2Q = points[ptIdx++];
-                    sb.Append(string.Format(CultureInfo.InvariantCulture, "Q {0:0.##} {1:0.##}, {2:0.##} {3:0.##} ", p1Q.X, p1Q.Y, p2Q.X, p2Q.Y));
+                    _pathBuilder.Append(CultureInfo.InvariantCulture, $"Q {p1Q.X:0.##} {p1Q.Y:0.##}, {p2Q.X:0.##} {p2Q.Y:0.##} ");
                     break;
                 case PathVerb.CubicTo:
                     var p1C = points[ptIdx++];
                     var p2C = points[ptIdx++];
                     var p3C = points[ptIdx++];
-                    sb.Append(string.Format(CultureInfo.InvariantCulture, "C {0:0.##} {1:0.##}, {2:0.##} {3:0.##}, {4:0.##} {5:0.##} ", p1C.X, p1C.Y, p2C.X, p2C.Y, p3C.X, p3C.Y));
+                    _pathBuilder.Append(CultureInfo.InvariantCulture, $"C {p1C.X:0.##} {p1C.Y:0.##}, {p2C.X:0.##} {p2C.Y:0.##}, {p3C.X:0.##} {p3C.Y:0.##} ");
                     break;
                 case PathVerb.Close:
-                    sb.Append("Z ");
+                    _pathBuilder.Append("Z ");
                     break;
             }
         }
 
-        return sb.ToString().TrimEnd();
+        if (_pathBuilder.Length > 0 && _pathBuilder[^1] == ' ')
+            _pathBuilder.Length--;
+
+        return _pathBuilder.ToString();
     }
 }
